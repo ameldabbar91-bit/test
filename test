@@ -1,110 +1,145 @@
-##############################################
-# AttachmentIntegratorApi - .env (Production)
-# Fichier maître : toutes les variables sont définies ici
-# Aucune variable ne doit être déclarée ailleurs
-##############################################
+#!/bin/ksh
+##############################################################################
+#  AttachmentIntegratorApi - Start Script (final clean)
+#
+#  ⚙️ UTILISATION RECOMMANDÉE EN PRODUCTION : via systemd (sans --daemon)
+#  -------------------------------------------------------------------------
+#    1) Copier le fichier service :
+#         /srv/FircoContinuity/data/new/AttachmentIntegratorApi/conf/attachementintegratorapi.service
+#         → /etc/systemd/system/attachementintegratorapi.service
+#    2) Recharger systemd :
+#         sudo systemctl daemon-reload
+#    3) Activer et démarrer :
+#         sudo systemctl enable --now attachementintegratorapi.service
+#    4) Logs :
+#         sudo journalctl -u attachementintegratorapi.service -f
+#
+#  🧷 MODE SOCKET UNIX (optionnel)
+#  -------------------------------------------------------------------------
+#    - Dans conf/.env : USE_UNIX_SOCKET=true
+#    - Dans conf/gunicorn_conf.py :
+#         commentez le bind TCP et décommentez :
+#             bind = f"unix:{API_SOCK}"
+#    - Configurer Nginx pour pointer vers le socket UNIX.
+#    - Stop.sh supprimera automatiquement le socket à l’arrêt.
+#
+#  ⏱️ max_wait (délai de validation du démarrage)
+#  -------------------------------------------------------------------------
+#    - Calcul = (API_NB_WORKERS * API_NB_THREADS) + marge (3s)
+#    - Exemple : 2w * 1t → 5s / 4w * 2t → 11s
+#    - Chaque worker peut prendre ~0.5–1s à démarrer (Oracle, libs…)
+#
+##############################################################################
 
-########## IDENTITÉ & CHEMINS ##########
-export API_NAME="AttachmentIntegratorApi"
-export CONTINUITY="/srv/FircoContinuity"
-export API_REPO="${CONTINUITY}/data/new/${API_NAME}"
+umask 027
 
-export API_BIN="${API_REPO}/bin"
-export API_CONF="${API_REPO}/conf"
-export API_RUN="${API_REPO}/run"
-export API_VENV="${API_REPO}/virtual"
-export API_LOG="${API_REPO}/log"
-export API_CERTIFICATS="${API_REPO}/certificats"
-export API_WORK="${API_REPO}/work"
-export API_TMP="${API_REPO}/work/tmp"
-export API_BUFFER="${API_REPO}/work/tmp"
-# Dossiers dédiés aux flux de fichiers
-export API_UPLOADS="${API_WORK}/uploads"
-export API_DOWNLOADS="${API_WORK}/downloads"
+# --------- Charger l'environnement ---------
+ENV_FILE="$(dirname "$0")/../conf/.env"
+if [ ! -f "${ENV_FILE}" ]; then
+  echo "[ERROR] conf/.env introuvable"
+  exit 1
+fi
+. "${ENV_FILE}"
 
-########## GUNICORN / RÉSEAU ##########
-export API_HOST="127.0.0.1"
-export API_PORT="8410"
-export API_NB_WORKERS="2"
-export API_NB_THREADS="1"
-export API_TIMEOUT="120"
-export API_GRACEFUL_TIMEOUT="30"
-export API_KEEPALIVE="5"
-export API_MAX_REQUESTS="1000"
-export API_MAX_REQUESTS_JITTER="50"
-export API_WORKER_CLASS="sync"
+# --------- Variables dérivées utiles ---------
+PID_FILE="${API_RUN}/${API_NAME}.pid"
+SOCK_FILE="${API_SOCK}"
+GUNICORN_CONF="${API_CONF}/gunicorn_conf.py"
+WSGI_FILE="${API_BIN}/wsgi.py"
 
-# Mode socket UNIX (facultatif)
-export USE_UNIX_SOCKET="false"
-export API_SOCK="${API_RUN}/gunicorn.sock"
+# --------- Vérifications de base ---------
+if [ ! -x "${API_VENV}/bin/activate" ]; then
+  echo "[ERROR] Virtualenv introuvable ou non exécutable: ${API_VENV}/bin/activate"
+  exit 1
+fi
+if [ ! -f "${GUNICORN_CONF}" ]; then
+  echo "[ERROR] Fichier de configuration Gunicorn manquant: ${GUNICORN_CONF}"
+  exit 1
+fi
+if [ ! -f "${WSGI_FILE}" ]; then
+  echo "[ERROR] wsgi.py introuvable: ${WSGI_FILE}"
+  exit 1
+fi
 
-########## LOCALES / PYTHON ##########
-export PYTHONIOENCODING="utf8"
-export LANG="en_US.UTF-8"
-# ⚙️ Garantit un environnement cohérent (UTF-8) pour Python, Oracle et les logs
+# --------- Création des dossiers requis ---------
+for d in "${API_RUN}" "${API_LOG}" "${API_CERTIFICATS}" "${API_WORK}" "${API_TMP}" \
+         "${API_BUFFER}" "${API_UPLOADS}" "${API_DOWNLOADS}"; do
+  [ -n "${d}" ] && [ ! -d "${d}" ] && mkdir -p "${d}"
+done
+# Dossier Flask "instance" (pour les fichiers de config runtime)
+[ ! -d "${API_REPO}/instance" ] && mkdir -p "${API_REPO}/instance"
 
-########## FLASK / JWT ##########
-export FLASK_ENV="production"
-export SECRET_KEY="change-me"
-export JWT_SECRET_KEY="change-me-too"
-export JWT_EXPIRES_MIN="60"  # Durée d’expiration du token JWT (en minutes)
+# --------- Gestion PID existant ---------
+if [ -f "${PID_FILE}" ]; then
+  OLD_PID="$(cat "${PID_FILE}" 2>/dev/null)"
+  if [ -n "${OLD_PID}" ] && ps -p "${OLD_PID}" >/dev/null 2>&1; then
+    echo "[WARN] ${API_NAME} déjà démarré (PID=${OLD_PID})"
+    echo "       Utilisez Stop.sh puis relancez si besoin."
+    exit 0
+  else
+    echo "[INFO] PID obsolète détecté -> nettoyage"
+    rm -f "${PID_FILE}" >/dev/null 2>&1
+  fi
+fi
 
-########## BASE DE DONNÉES (ORACLE) ##########
-# ---------------------------------------------------------------
-# 🔷 MODE SQLALCHEMY (ORM)
-#   - Recommandé pour la gestion d'entités et transactions automatiques
-#   - Utilise SQLAlchemy via le driver oracledb
-# ---------------------------------------------------------------
-export USE_SQLALCHEMY="true"
+# --------- Nettoyage socket UNIX obsolète ---------
+if [ "${USE_UNIX_SOCKET}" = "true" ]; then
+  if [ -S "${SOCK_FILE}" ]; then
+    echo "[INFO] Suppression du socket obsolète: ${SOCK_FILE}"
+    rm -f "${SOCK_FILE}" >/dev/null 2>&1
+  fi
+fi
 
-# Chaîne de connexion Oracle complète (user/pass/host/port/service)
-export DATABASE_URL="oracle+oracledb://JJZAO:CHANGE_ME@sldcfrnxjfs2489.fr.intranet:10195/?service_name=ODNX0JZ00"
+# --------- Purge TOTALE des pyc/pyo/__pycache__ ---------
+find "${API_REPO}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+find "${API_REPO}" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null
 
-# ---------------------------------------------------------------
-# 🔶 MODE ORACLE THICK (Requêtes natives sans ORM)
-#   - Si USE_SQLALCHEMY=false, utilisation du client natif Oracle
-#   - Oracle Instant Client doit être installé
-# ---------------------------------------------------------------
-export ORACLE_THICK_MODE="true"
-export ORACLE_CLIENT_LIB_DIR="/opt/oracle/instantclient_19_23"
-export ORACLE_CONFIG_DIR="/opt/oracle/network/admin"
+# --------- Activation du virtualenv ---------
+. "${API_VENV}/bin/activate"
 
-# Taille du pool de connexions (ORM)
-export DB_NB_POOL="2"
+# --------- Vérification de la conf Gunicorn ---------
+if ! gunicorn --config "${GUNICORN_CONF}" --check-config >/dev/null 2>&1; then
+  echo "[WARN] gunicorn --check-config a échoué (vérifiez la conf), tentative de démarrage quand même..."
+fi
 
-########## S3 (Upload / Sécurité) ##########
-# ---------------------------------------------------------------
-# ⚙️ Paramètres essentiels
-# ---------------------------------------------------------------
-export S3_ENDPOINT_URL="https://s3.eu-west-3.amazonaws.com"
-export AWS_ACCESS_KEY_ID=""
-export AWS_SECRET_ACCESS_KEY=""
-export S3_BUCKET="cops-bucket"
-export S3_KEY_PREFIX="env/prod"
-export S3_CA_BUNDLE="${API_CERTIFICATS}/ca.pem"
+# --------- Démarrage de Gunicorn ---------
+echo "[INFO] Démarrage ${API_NAME} ..."
+gunicorn --config "${GUNICORN_CONF}" wsgi:app &
+GUNI_PID=$!
 
-# ---------------------------------------------------------------
-# 🔐 Paramètres avancés (désactivés pour le moment)
-# ---------------------------------------------------------------
-# export S3_REGION_NAME="eu-west-3"
-# export S3_ADDRESSING_STYLE="virtual"   # virtual | path
-# export S3_SSE="AES256"                 # AES256 | aws:kms
-# export S3_SSE_KMS_KEY_ID=""            # ARN de la clé KMS si aws:kms
-# export S3_CLIENT_CERT="${API_CERTIFICATS}/client.crt"
-# export S3_CLIENT_KEY="${API_CERTIFICATS}/client.key"
+# --------- Écriture du PID ---------
+echo "${GUNI_PID}" > "${PID_FILE}"
 
-########## FICHIERS & UPLOAD ##########
-export FILENAME_REGEX="^[a-zA-Z0-9._\\- ]+$"
-export ALLOWED_EXTENSIONS="doc,docx,eml,gif,html,jpeg,jpg,msg,pdf,png,ppt,pptx,rtf,txt,xls,xlsx,zip,7z"
-export MAX_FILE_SIZE="20000000"  # 20 Mo
+# --------- Validation du démarrage ---------
+W=${API_NB_WORKERS}
+T=${API_NB_THREADS}
+MARGE=3
+max_wait=$(( W * T + MARGE ))
+[ ${max_wait} -lt 5 ] && max_wait=5
 
-########## OPÉRATEURS MÉTIER ##########
-export VESPER_API_OPERATOR="Vesper Api"
-export VESPER_COMMENT="File received from VESPER"
-export FLORA_API_OPERATOR="Flora Api"
-export FLORA_COMMENT="File received from FLORA"
+i=0
+while [ $i -lt $max_wait ]; do
+  if ps -p "${GUNI_PID}" >/dev/null 2>&1; then
+    if [ "${USE_UNIX_SOCKET}" = "true" ]; then
+      echo "[OK] ${API_NAME} démarré (PID=${GUNI_PID}) [UNIX socket]"
+      echo "     Socket : ${SOCK_FILE}"
+    else
+      echo "[OK] ${API_NAME} démarré (PID=${GUNI_PID}) [TCP ${API_HOST}:${API_PORT}]"
+    fi
+    break
+  fi
+  sleep 1; i=$((i+1))
+done
 
-########## LOGGING ##########
-export LOG_LEVEL="INFO"
-export LOG_MAX_SIZE="1000000"   # 1 Mo par fichier log avant rotation
-export LOG_NB_BACKUP="10"       # Nombre de fichiers log conservés
+if ! ps -p "${GUNI_PID}" >/dev/null 2>&1; then
+  echo "[ERROR] Échec du démarrage ${API_NAME} (process non détecté dans ${max_wait}s)"
+  rm -f "${PID_FILE}" >/dev/null 2>&1
+  deactivate
+  exit 1
+fi
+
+# --------- Désactivation du virtualenv ---------
+deactivate
+
+# --------- Afficher le statut courant ---------
+"${API_BIN}/Status.sh"
