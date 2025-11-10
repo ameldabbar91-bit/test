@@ -1,0 +1,99 @@
+import os
+import ssl
+import tempfile
+
+# ============================================================
+# Gunicorn configuration for AttachmentIntegratorApi
+# - Python 3.12 / Gunicorn 21+
+# - TCP par défaut, socket UNIX optionnel (voir bloc "BIND")
+# - Paramètres TLS modernes (commentés) prêts à activer
+# - Affiche la config effective au démarrage
+# ============================================================
+
+# ------------------- VARIABLES ENV -------------------
+API_REPO = os.getenv("API_REPO")
+API_RUN = os.getenv("API_RUN")
+API_LOG = os.getenv("API_LOG")
+API_CONF = os.getenv("API_CONF")
+API_CERTIFICATS = os.getenv("API_CERTIFICATS")
+API_BUFFER = os.getenv("API_BUFFER")
+API_BIN = os.getenv("API_BIN")
+
+API_HOST = os.getenv("API_HOST", "127.0.0.1")
+API_PORT = int(os.getenv("API_PORT", "8410"))
+API_NB_WORKERS = int(os.getenv("API_NB_WORKERS", "2"))
+API_NB_THREADS = int(os.getenv("API_NB_THREADS", "1"))
+API_TIMEOUT = int(os.getenv("API_TIMEOUT", "120"))
+API_GRACEFUL_TIMEOUT = int(os.getenv("API_GRACEFUL_TIMEOUT", "30"))
+API_KEEPALIVE = int(os.getenv("API_KEEPALIVE", "5"))
+API_MAX_REQUESTS = int(os.getenv("API_MAX_REQUESTS", "1000"))
+API_MAX_REQUESTS_JITTER = int(os.getenv("API_MAX_REQUESTS_JITTER", "50"))
+API_WORKER_CLASS = os.getenv("API_WORKER_CLASS", "sync")
+
+USE_UNIX_SOCKET = os.getenv("USE_UNIX_SOCKET", "false").lower() == "true"
+API_SOCK = os.getenv("API_SOCK", os.path.join(API_RUN or ".", "gunicorn.sock"))
+
+# --- Fail-fast si API_BIN absent (évite chdir=None) ---
+if not API_BIN:
+    raise RuntimeError("API_BIN is not set in environment (.env).")
+
+# ------------------- FICHIERS / LOGS -------------------
+pidfile = os.path.join(API_RUN or ".", "gunicorn.pid")
+accesslog = "-"     # stdout (mettre un chemin si fichier voulu)
+errorlog  = "-"     # stdout (mettre un chemin si fichier voulu)
+loglevel  = "info"
+print_config = True           # ✅ affiche la config effective
+capture_output = True         # ✅ redirige stdout/stderr workers
+enable_stdio_inheritance = True
+
+# ------------------- BIND -------------------
+# TCP par défaut
+bind = f"{API_HOST}:{API_PORT}"
+
+# --- Socket UNIX (optionnel) ---
+# IMPACTS :
+#   1) Décommentez la ligne ci-dessous et commentez la version TCP ci-dessus
+#   2) Assurez-vous que le dossier ${API_RUN} existe et est accessible
+#   3) Configurez Nginx : upstream -> server unix:/.../run/gunicorn.sock
+#   4) Stop.sh nettoie le socket à l’arrêt
+# bind = f"unix:{API_SOCK}"
+
+# ------------------- WORKERS -------------------
+workers = API_NB_WORKERS
+threads = API_NB_THREADS
+worker_class = API_WORKER_CLASS
+timeout = API_TIMEOUT
+graceful_timeout = API_GRACEFUL_TIMEOUT
+keepalive = API_KEEPALIVE
+max_requests = API_MAX_REQUESTS
+max_requests_jitter = API_MAX_REQUESTS_JITTER
+proc_name = os.getenv("API_NAME", "AttachmentIntegratorApi")   # ✅ nom du process OS
+
+# ------------------- RÉPERTOIRE DE TRAVAIL -------------------
+# Gunicorn exécutera wsgi:app depuis ce dossier
+chdir = API_BIN
+
+# ------------------- TLS (facultatif, mais sécurisé) -------------------
+# Pour activer TLS natif côté Gunicorn (souvent TLS est géré par Nginx),
+# décommentez les lignes ci-dessous et fournissez vos certs.
+#
+# certfile = os.path.join(API_CERTIFICATS or "", "fullchain.pem")
+# keyfile  = os.path.join(API_CERTIFICATS or "", "privkey.key")
+#
+# # Versions/ciphers modernes (évite TLS obsolète ; privilégie AES-GCM & CHACHA20)
+# ssl_version = ssl.PROTOCOL_TLS_SERVER          # ✅ Python 3.12
+# ciphers = (
+#     "ECDHE+AESGCM:ECDHE+CHACHA20"
+# )
+# # Exiger un handshake complet dès la connexion (meilleure sécurité)
+# do_handshake_on_connect = True                 # ✅ sécurité renforcée
+# # Si vous faites du mTLS (cert client), activez :
+# # cert_reqs = ssl.CERT_REQUIRED
+# # ca_certs  = os.path.join(API_CERTIFICATS or "", "ca.pem")
+
+# ------------------- CALLBACKS -------------------
+def on_starting(server):
+    """Redéfinit le répertoire temporaire avant le fork des workers."""
+    if API_BUFFER:
+        print(f"[Gunicorn] Overriding tmpdir -> {API_BUFFER}")
+        tempfile.tempdir = API_BUFFER
