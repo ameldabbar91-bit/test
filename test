@@ -1,101 +1,110 @@
-import os
-import ssl
-import tempfile
+##############################################
+# AttachmentIntegratorApi - .env (Production)
+# Fichier maître : toutes les variables sont définies ici
+# Aucune variable ne doit être déclarée ailleurs
+##############################################
 
-# ============================================================
-# Gunicorn configuration for AttachmentIntegratorApi
-# - Python 3.12 / Gunicorn 21+
-# - TCP par défaut, socket UNIX optionnel (voir bloc "BIND")
-# - Paramètres TLS modernes (commentés) prêts à activer
-# - Affiche la config effective au démarrage
-# ============================================================
+########## IDENTITÉ & CHEMINS ##########
+export API_NAME="AttachmentIntegratorApi"
+export CONTINUITY="/srv/FircoContinuity"
+export API_REPO="${CONTINUITY}/data/new/${API_NAME}"
 
-# ------------------- VARIABLES ENV -------------------
-API_REPO = os.getenv("API_REPO")
-API_RUN = os.getenv("API_RUN")
-API_LOG = os.getenv("API_LOG")
-API_CONF = os.getenv("API_CONF")
-API_CERTIFICATS = os.getenv("API_CERTIFICATS")
-API_BUFFER = os.getenv("API_BUFFER")
-API_BIN = os.getenv("API_BIN")
+export API_BIN="${API_REPO}/bin"
+export API_CONF="${API_REPO}/conf"
+export API_RUN="${API_REPO}/run"
+export API_VENV="${API_REPO}/virtual"
+export API_LOG="${API_REPO}/log"
+export API_CERTIFICATS="${API_REPO}/certificats"
+export API_WORK="${API_REPO}/work"
+export API_TMP="${API_REPO}/work/tmp"
+export API_BUFFER="${API_REPO}/work/tmp"
+# Dossiers dédiés aux flux de fichiers
+export API_UPLOADS="${API_WORK}/uploads"
+export API_DOWNLOADS="${API_WORK}/downloads"
 
-API_HOST = os.getenv("API_HOST", "127.0.0.1")
-API_PORT = int(os.getenv("API_PORT", "8410"))
-API_NB_WORKERS = int(os.getenv("API_NB_WORKERS", "2"))
-API_NB_THREADS = int(os.getenv("API_NB_THREADS", "1"))
-API_TIMEOUT = int(os.getenv("API_TIMEOUT", "120"))
-API_GRACEFUL_TIMEOUT = int(os.getenv("API_GRACEFUL_TIMEOUT", "30"))
-API_KEEPALIVE = int(os.getenv("API_KEEPALIVE", "5"))
-API_MAX_REQUESTS = int(os.getenv("API_MAX_REQUESTS", "1000"))
-API_MAX_REQUESTS_JITTER = int(os.getenv("API_MAX_REQUESTS_JITTER", "50"))
-API_WORKER_CLASS = os.getenv("API_WORKER_CLASS", "sync")
+########## GUNICORN / RÉSEAU ##########
+export API_HOST="127.0.0.1"
+export API_PORT="8410"
+export API_NB_WORKERS="2"
+export API_NB_THREADS="1"
+export API_TIMEOUT="120"
+export API_GRACEFUL_TIMEOUT="30"
+export API_KEEPALIVE="5"
+export API_MAX_REQUESTS="1000"
+export API_MAX_REQUESTS_JITTER="50"
+export API_WORKER_CLASS="sync"
 
-USE_UNIX_SOCKET = os.getenv("USE_UNIX_SOCKET", "false").lower() == "true"
-API_SOCK = os.getenv("API_SOCK", os.path.join(API_RUN or ".", "gunicorn.sock"))
+# Mode socket UNIX (facultatif)
+export USE_UNIX_SOCKET="false"
+export API_SOCK="${API_RUN}/gunicorn.sock"
 
-# --- Fail-fast si API_BIN absent (évite chdir=None) ---
-if not API_BIN:
-    raise RuntimeError("API_BIN is not set in environment (.env).")
+########## LOCALES / PYTHON ##########
+export PYTHONIOENCODING="utf8"
+export LANG="en_US.UTF-8"
+# ⚙️ Garantit un environnement cohérent (UTF-8) pour Python, Oracle et les logs
 
-# ------------------- FICHIERS / LOGS -------------------
-pidfile = os.path.join(API_RUN or ".", "gunicorn.pid")
-accesslog = "{}/gunicorn_access-{}.log".format(FRAUD_LOG, prefix_date_file_name)
-errorlog = "{}/gunicorn-{}.log".format(FRAUD_LOG, prefix_date_file_name)
-access_log_format = '{"remote_addr": "%(h)s", "user": "%(u)s", "time": "%(t)s", "method": "%(m)s", "path": "%(U)s", "query": "%(q)s", "status": %(s)s, "size": %(b)s, "referer": "%(f)s", "user_agent": "%(a)s", "duration_microsec": %(D)s }'
-enable_stdio_inheritance = True
-loglevel  = "info"
-print_config = True           # ✅ affiche la config effective
-capture_output = True         # ✅ redirige stdout/stderr workers
-enable_stdio_inheritance = True
+########## FLASK / JWT ##########
+export FLASK_ENV="production"
+export SECRET_KEY="change-me"
+export JWT_SECRET_KEY="change-me-too"
+export JWT_EXPIRES_MIN="60"  # Durée d’expiration du token JWT (en minutes)
 
-# ------------------- BIND -------------------
-# TCP par défaut
-bind = f"{API_HOST}:{API_PORT}"
+########## BASE DE DONNÉES (ORACLE) ##########
+# ---------------------------------------------------------------
+# 🔷 MODE SQLALCHEMY (ORM)
+#   - Recommandé pour la gestion d'entités et transactions automatiques
+#   - Utilise SQLAlchemy via le driver oracledb
+# ---------------------------------------------------------------
+export USE_SQLALCHEMY="true"
 
-# --- Socket UNIX (optionnel) ---
-# IMPACTS :
-#   1) Décommentez la ligne ci-dessous et commentez la version TCP ci-dessus
-#   2) Assurez-vous que le dossier ${API_RUN} existe et est accessible
-#   3) Configurez Nginx : upstream -> server unix:/.../run/gunicorn.sock
-#   4) Stop.sh nettoie le socket à l’arrêt
-# bind = f"unix:{API_SOCK}"
+# Chaîne de connexion Oracle complète (user/pass/host/port/service)
+export DATABASE_URL="oracle+oracledb://JJZAO:CHANGE_ME@sldcfrnxjfs2489.fr.intranet:10195/?service_name=ODNX0JZ00"
 
-# ------------------- WORKERS -------------------
-workers = API_NB_WORKERS
-threads = API_NB_THREADS
-worker_class = API_WORKER_CLASS
-timeout = API_TIMEOUT
-graceful_timeout = API_GRACEFUL_TIMEOUT
-keepalive = API_KEEPALIVE
-max_requests = API_MAX_REQUESTS
-max_requests_jitter = API_MAX_REQUESTS_JITTER
-proc_name = os.getenv("API_NAME", "AttachmentIntegratorApi")   # ✅ nom du process OS
+# ---------------------------------------------------------------
+# 🔶 MODE ORACLE THICK (Requêtes natives sans ORM)
+#   - Si USE_SQLALCHEMY=false, utilisation du client natif Oracle
+#   - Oracle Instant Client doit être installé
+# ---------------------------------------------------------------
+export ORACLE_THICK_MODE="true"
+export ORACLE_CLIENT_LIB_DIR="/opt/oracle/instantclient_19_23"
+export ORACLE_CONFIG_DIR="/opt/oracle/network/admin"
 
-# ------------------- RÉPERTOIRE DE TRAVAIL -------------------
-# Gunicorn exécutera wsgi:app depuis ce dossier
-chdir = API_BIN
+# Taille du pool de connexions (ORM)
+export DB_NB_POOL="2"
 
-# ------------------- TLS (facultatif, mais sécurisé) -------------------
-# Pour activer TLS natif côté Gunicorn (souvent TLS est géré par Nginx),
-# décommentez les lignes ci-dessous et fournissez vos certs.
-#
-# certfile = os.path.join(API_CERTIFICATS or "", "fullchain.pem")
-# keyfile  = os.path.join(API_CERTIFICATS or "", "privkey.key")
-#
-# # Versions/ciphers modernes (évite TLS obsolète ; privilégie AES-GCM & CHACHA20)
-# ssl_version = ssl.PROTOCOL_TLS_SERVER          # ✅ Python 3.12
-# ciphers = (
-#     "ECDHE+AESGCM:ECDHE+CHACHA20"
-# )
-# # Exiger un handshake complet dès la connexion (meilleure sécurité)
-# do_handshake_on_connect = True                 # ✅ sécurité renforcée
-# # Si vous faites du mTLS (cert client), activez :
-# # cert_reqs = ssl.CERT_REQUIRED
-# # ca_certs  = os.path.join(API_CERTIFICATS or "", "ca.pem")
+########## S3 (Upload / Sécurité) ##########
+# ---------------------------------------------------------------
+# ⚙️ Paramètres essentiels
+# ---------------------------------------------------------------
+export S3_ENDPOINT_URL="https://s3.eu-west-3.amazonaws.com"
+export AWS_ACCESS_KEY_ID=""
+export AWS_SECRET_ACCESS_KEY=""
+export S3_BUCKET="cops-bucket"
+export S3_KEY_PREFIX="env/prod"
+export S3_CA_BUNDLE="${API_CERTIFICATS}/ca.pem"
 
-# ------------------- CALLBACKS -------------------
-def on_starting(server):
-    """Redéfinit le répertoire temporaire avant le fork des workers."""
-    if API_BUFFER:
-        print(f"[Gunicorn] Overriding tmpdir -> {API_BUFFER}")
-        tempfile.tempdir = API_BUFFER
+# ---------------------------------------------------------------
+# 🔐 Paramètres avancés (désactivés pour le moment)
+# ---------------------------------------------------------------
+# export S3_REGION_NAME="eu-west-3"
+# export S3_ADDRESSING_STYLE="virtual"   # virtual | path
+# export S3_SSE="AES256"                 # AES256 | aws:kms
+# export S3_SSE_KMS_KEY_ID=""            # ARN de la clé KMS si aws:kms
+# export S3_CLIENT_CERT="${API_CERTIFICATS}/client.crt"
+# export S3_CLIENT_KEY="${API_CERTIFICATS}/client.key"
+
+########## FICHIERS & UPLOAD ##########
+export FILENAME_REGEX="^[a-zA-Z0-9._\\- ]+$"
+export ALLOWED_EXTENSIONS="doc,docx,eml,gif,html,jpeg,jpg,msg,pdf,png,ppt,pptx,rtf,txt,xls,xlsx,zip,7z"
+export MAX_FILE_SIZE="20000000"  # 20 Mo
+
+########## OPÉRATEURS MÉTIER ##########
+export VESPER_API_OPERATOR="Vesper Api"
+export VESPER_COMMENT="File received from VESPER"
+export FLORA_API_OPERATOR="Flora Api"
+export FLORA_COMMENT="File received from FLORA"
+
+########## LOGGING ##########
+export LOG_LEVEL="INFO"
+export LOG_MAX_SIZE="1000000"   # 1 Mo par fichier log avant rotation
+export LOG_NB_BACKUP="10"       # Nombre de fichiers log conservés
