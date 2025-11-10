@@ -1,31 +1,30 @@
 #!/bin/ksh
 ##############################################################################
-#  AttachmentIntegratorApi - Stop Script (final version)
+#  AttachmentIntegratorApi - Status Script (final version)
 #
-#  ⚙️ UTILISATION EN PRODUCTION AVEC SYSTEMD :
+#  ⚙️ UTILISATION AVEC SYSTEMD (recommandé) :
 #  -------------------------------------------------------------------------
-#    - Ce script est appelé par systemd ou manuellement :
-#        sudo systemctl stop attachementintegratorapi.service
-#      (ou directement : ./Stop.sh)
-#
-#  ⚙️ IMPACT SYSTEMD (aucun changement requis)
-#  -------------------------------------------------------------------------
-#    - Gunicorn gère lui-même le socket UNIX s’il est activé.
-#    - systemd n’a pas besoin d’un fichier .socket dédié.
-#    - Vous pouvez, si besoin, séparer les unités (.socket / .service)
-#      pour du socket-activation, mais ce n’est PAS nécessaire ici.
+#    sudo systemctl status attachementintegratorapi.service
+#    sudo journalctl -u attachementintegratorapi.service -f
 #
 #  🧷 MODE SOCKET UNIX :
 #  -------------------------------------------------------------------------
 #    - USE_UNIX_SOCKET=true dans conf/.env
 #    - bind unix activé dans conf/gunicorn_conf.py
-#    - Ce script supprime le socket automatiquement à l'arrêt.
+#    - Ce script affiche la présence du socket et son état.
 #
-#  ⏱️ DÉLAI D'ARRÊT GRACIEUX :
+#  💡 INFORMATIONS AFFICHÉES :
 #  -------------------------------------------------------------------------
-#    - On envoie SIGQUIT (graceful), puis SIGTERM, puis SIGKILL si besoin.
-#    - Délai d'attente = (API_NB_WORKERS * API_NB_THREADS) + marge (3s)
-#    - Minimum 5 secondes.
+#    - PID et état du process Gunicorn
+#    - Mode actif : TCP ou UNIX socket
+#    - Endpoint ou socket détecté
+#    - Nombre de workers / threads depuis .env
+#
+#  ⚙️ IMPACT SYSTEMD :
+#  -------------------------------------------------------------------------
+#    - Aucun changement requis : systemd ne gère pas le socket ici.
+#    - Gunicorn crée et gère le socket lui-même si activé.
+#    - Un fichier .socket systemd serait possible, mais inutile ici.
 ##############################################################################
 
 umask 027
@@ -41,6 +40,7 @@ fi
 # --------- Variables dérivées ---------
 PID_FILE="${API_RUN}/${API_NAME}.pid"
 SOCK_FILE="${API_SOCK}"
+GUNICORN_CONF="${API_CONF}/gunicorn_conf.py"
 
 # --------- Fonction utilitaire ---------
 is_alive() {
@@ -48,86 +48,70 @@ is_alive() {
   [ -n "${PID}" ] && ps -p "${PID}" >/dev/null 2>&1
 }
 
-# --------- Si pas de PID -> rien à arrêter ---------
+echo "=== ${API_NAME} :: Status ==="
+[ -f "${GUNICORN_CONF}" ] && echo "gunicorn_conf: ${GUNICORN_CONF}" || echo "gunicorn_conf: MISSING"
+echo "workers=${API_NB_WORKERS} threads=${API_NB_THREADS}"
+
+# --------- Cas sans PID ---------
 if [ ! -f "${PID_FILE}" ]; then
-  echo "[INFO] ${API_NAME}: aucun PID trouvé (déjà arrêté ?)"
-  if [ "${USE_UNIX_SOCKET}" = "true" ] && [ -S "${SOCK_FILE}" ]; then
-    echo "[INFO] Suppression du socket résiduel: ${SOCK_FILE}"
-    rm -f "${SOCK_FILE}" >/dev/null 2>&1
-  fi
-  exit 0
-fi
-
-PID="$(cat "${PID_FILE}" 2>/dev/null)"
-
-# --------- Cas PID vide ---------
-if [ -z "${PID}" ]; then
-  echo "[INFO] Fichier PID vide, nettoyage..."
-  rm -f "${PID_FILE}" >/dev/null 2>&1
-  if [ "${USE_UNIX_SOCKET}" = "true" ] && [ -S "${SOCK_FILE}" ]; then
-    echo "[INFO] Suppression du socket résiduel: ${SOCK_FILE}"
-    rm -f "${SOCK_FILE}" >/dev/null 2>&1
-  fi
-  exit 0
-fi
-
-# --------- Process déjà mort -> nettoyage ---------
-if ! is_alive "${PID}"; then
-  echo "[INFO] ${API_NAME}(${PID}): déjà arrêté (PID obsolète)"
-  rm -f "${PID_FILE}" >/dev/null 2>&1
-  if [ "${USE_UNIX_SOCKET}" = "true" ] && [ -S "${SOCK_FILE}" ]; then
-    echo "[INFO] Suppression du socket résiduel: ${SOCK_FILE}"
-    rm -f "${SOCK_FILE}" >/dev/null 2>&1
-  fi
-  exit 0
-fi
-
-# --------- Calcul du délai gracieux ---------
-W=${API_NB_WORKERS}
-T=${API_NB_THREADS}
-MARGE=3
-GRACE_WAIT=$(( W * T + MARGE ))
-[ ${GRACE_WAIT} -lt 5 ] && GRACE_WAIT=5
-
-echo "[INFO] Tentative d'arrêt gracieux (${API_NAME}, PID=${PID})"
-echo "[INFO] Envoi SIGQUIT (graceful), attente max ${GRACE_WAIT}s ..."
-kill -QUIT "${PID}" 2>/dev/null || true
-
-i=0
-while [ $i -lt ${GRACE_WAIT} ]; do
-  if ! is_alive "${PID}"; then
-    echo "[OK] ${API_NAME}(${PID}) arrêté proprement (SIGQUIT)"
-    rm -f "${PID_FILE}" >/dev/null 2>&1
-    if [ "${USE_UNIX_SOCKET}" = "true" ] && [ -S "${SOCK_FILE}" ]; then
-      echo "[INFO] Suppression du socket: ${SOCK_FILE}"
-      rm -f "${SOCK_FILE}" >/dev/null 2>&1
+  echo "PID file: ${PID_FILE} (absent)"
+  if [ "${USE_UNIX_SOCKET}" = "true" ]; then
+    if [ -S "${SOCK_FILE}" ]; then
+      echo "socket: ${SOCK_FILE} (présent sans PID) -> stale socket probable"
+      exit 1
     fi
-    exit 0
   fi
-  sleep 1; i=$((i+1))
-done
-
-# --------- SIGTERM (forcé si toujours vivant) ---------
-echo "[WARN] ${API_NAME}(${PID}) toujours actif après ${GRACE_WAIT}s -> envoi SIGTERM"
-kill -TERM "${PID}" 2>/dev/null || true
-sleep 2
-
-if is_alive "${PID}"; then
-  echo "[WARN] SIGTERM inefficace -> envoi SIGKILL"
-  kill -KILL "${PID}" 2>/dev/null || true
-  sleep 1
-fi
-
-# --------- Nettoyage final ---------
-if ! is_alive "${PID}"; then
-  echo "[OK] ${API_NAME}(${PID}) arrêté (forcé)"
-  rm -f "${PID_FILE}" >/dev/null 2>&1
-  if [ "${USE_UNIX_SOCKET}" = "true" ] && [ -S "${SOCK_FILE}" ]; then
-    echo "[INFO] Suppression du socket: ${SOCK_FILE}"
-    rm -f "${SOCK_FILE}" >/dev/null 2>&1
-  fi
-  exit 0
-else
-  echo "[ERROR] ${API_NAME}(${PID}): arrêt échoué, process toujours actif"
+  echo "status: NOT RUNNING"
   exit 1
 fi
+
+# --------- Lire le PID ---------
+PID="$(cat "${PID_FILE}" 2>/dev/null)"
+
+# --------- PID vide ---------
+if [ -z "${PID}" ]; then
+  echo "PID file: ${PID_FILE} (vide)"
+  echo "status: NOT RUNNING (stale pid)"
+  exit 1
+fi
+
+# --------- Vérification du process ---------
+if is_alive "${PID}"; then
+  echo "PID: ${PID} (alive)"
+  if [ "${USE_UNIX_SOCKET}" = "true" ]; then
+    echo "mode: UNIX socket"
+    if [ -S "${SOCK_FILE}" ]; then
+      echo "socket: ${SOCK_FILE} (présent)"
+      ss -xl 2>/dev/null | grep -q "$(basename "${SOCK_FILE}")" && echo "listen: detected by ss" || true
+    else
+      echo "socket: ${SOCK_FILE} (absent) -> vérifiez conf/gunicorn_conf.py et permissions ${API_RUN}"
+    fi
+  else
+    echo "mode: TCP"
+    echo "tcp: ${API_HOST}:${API_PORT}"
+    ss -lntp 2>/dev/null | grep -q "${API_PORT}" && echo "listen: detected by ss" || true
+  fi
+  echo "status: RUNNING"
+  exit 0
+else
+  echo "PID: ${PID} (dead)"
+  if [ "${USE_UNIX_SOCKET}" = "true" ] && [ -S "${SOCK_FILE}" ]; then
+    echo "socket: ${SOCK_FILE} (présent sans process) -> stale socket"
+  fi
+  echo "status: NOT RUNNING (stale pid)"
+  exit 1
+fi
+
+##############################################################################
+# 🧭 UTILISATION RAPIDE :
+# ---------------------------------------------------------------------------
+#   ./Status.sh
+#   echo $?           # 0 = OK, 1 = NOT RUNNING
+#
+#   Avec systemd :
+#     sudo systemctl status attachementintegratorapi.service
+#     sudo journalctl -u attachementintegratorapi.service -f
+#
+#   Vérif manuelle socket :
+#     ss -xl | grep gunicorn.sock
+##############################################################################
