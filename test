@@ -39,8 +39,10 @@ if not API_BIN:
 
 # ------------------- FICHIERS / LOGS -------------------
 pidfile = os.path.join(API_RUN or ".", "gunicorn.pid")
-accesslog = "-"     # stdout (mettre un chemin si fichier voulu)
-errorlog  = "-"     # stdout (mettre un chemin si fichier voulu)
+accesslog = "{}/gunicorn_access-{}.log".format(FRAUD_LOG, prefix_date_file_name)
+errorlog = "{}/gunicorn-{}.log".format(FRAUD_LOG, prefix_date_file_name)
+access_log_format = '{"remote_addr": "%(h)s", "user": "%(u)s", "time": "%(t)s", "method": "%(m)s", "path": "%(U)s", "query": "%(q)s", "status": %(s)s, "size": %(b)s, "referer": "%(f)s", "user_agent": "%(a)s", "duration_microsec": %(D)s }'
+enable_stdio_inheritance = True
 loglevel  = "info"
 print_config = True           # ✅ affiche la config effective
 capture_output = True         # ✅ redirige stdout/stderr workers
