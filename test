@@ -1,261 +1,30 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ========= CONFIG =========
-PROJECT_NAME="AttachmentIntegratorApi"
-PROJECT_ROOT="${PWD}/${PROJECT_NAME}"
-
-echo "[INFO] Installation du projet dans: ${PROJECT_ROOT}"
-
-# ========= ARBO =========
-mkdir -p "${PROJECT_ROOT}/bin"
-mkdir -p "${PROJECT_ROOT}/bin/app"
-mkdir -p "${PROJECT_ROOT}/conf"
-mkdir -p "${PROJECT_ROOT}/certificats"
-mkdir -p "${PROJECT_ROOT}/run"
-mkdir -p "${PROJECT_ROOT}/log"
-mkdir -p "${PROJECT_ROOT}/work/uploads"
-mkdir -p "${PROJECT_ROOT}/work/downloads"
-mkdir -p "${PROJECT_ROOT}/work/tmp"
-mkdir -p "${PROJECT_ROOT}/virtual"
-
-# ========= .env =========
-cat > "${PROJECT_ROOT}/conf/.env" <<'ENV'
-# --- Identité & chemins racine ---
-export API_NAME="AttachmentIntegratorApi"
-export API_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export API_BIN="${API_REPO}/bin"
-export API_CONF="${API_REPO}/conf"
-export API_RUN="${API_REPO}/run"
-export API_LOG="${API_REPO}/log"
-export API_WORK="${API_REPO}/work"
-export API_UPLOADS="${API_WORK}/uploads"
-export API_DOWNLOADS="${API_WORK}/downloads"
-export API_TMP="${API_WORK}/tmp"
-export API_CERTIFICATS="${API_REPO}/certificats"
-export API_VENV="${API_REPO}/virtual"
-
-# --- Réseau ---
-export API_HOST="127.0.0.1"
-export API_PORT="8410"
-
-# --- Gunicorn ---
-export API_NB_WORKERS="2"
-export API_NB_THREADS="2"
-export LOG_LEVEL="info"
-
-# --- Sécurité (proc) ---
-export API_USER="$(id -un)"
-export API_GROUP="$(id -gn)"
-
-# --- Python locale ---
-export LC_ALL="fr_FR.UTF-8"
-
-# --- Oracle/DB (placeholder, non bloquant ici) ---
-export USE_SQLALCHEMY="true"
-export DATABASE_URL=""
-export ORACLE_THICK_MODE="false"
-
-ENV
-
-# ========= Start.sh =========
-cat > "${PROJECT_ROOT}/bin/Start.sh" <<'SH'
-#!/bin/bash
-set -euo pipefail
-
-ENV_FILE="$(dirname "$0")/../conf/.env"
-[ -f "${ENV_FILE}" ] && . "${ENV_FILE}"
-
-PIDFILE="${API_RUN}/gunicorn.pid"
+#! /bin/bash
+set -x
+PIDFILE=$FRAUD_RUN/gunicorn.pid
 START=0
-
+export PYTHONPATH="${PYTHONPATH}:${FRAUD_BIN}"
+export LC_ALL=fr_FR.UTF-8
 if test -f "$PIDFILE"; then
-  GUNI_PID=$(cat "$PIDFILE")
-  ListeProcess=$(ps -ef | grep "$GUNI_PID" | grep -v grep | wc -l || true)
-  if [ "$ListeProcess" = "0" ]; then
-    START=1
-  else
-    echo "[INFO] Gunicorn déjà démarré (PID ${GUNI_PID})"
-    exit 0
-  fi
+	GUNI_PID=`cat $PIDFILE`
+	ListeProcess=`ps -ef | grep $GUNI_PID | grep -v grep | wc -l`
+	if [ "$ListeProcess" == "0" ]; then
+		START=1
+	else
+		echo "gunicorn is already started on {$GUNI_PID} if you want to restart it please stop it first"
+		exit 0
+	fi
 else
-  START=1
+	START=1
 fi
 
 if [ $START -eq 1 ]; then
-  echo "[INFO] Démarrage Gunicorn..."
-
-  # Active venv
-  source "$API_VENV/bin/activate"
-
-  # Purge caches
-  find "$API_BIN"  | grep -E "(__pycache__|\.pyc|\.pyo$)" | xargs rm -rf || true
-  find "$API_CONF" | grep -E "(__pycache__|\.pyc|\.pyo$)" | xargs rm -rf || true
-
-  # Sanity-check Python
-  ( cd "$API_BIN" && python - <<'PY'
-import sys
-print("PYTHONPATH:", sys.path)
-from web_app import app
-print("App Flask OK:", app)
-PY
-  )
-
-  # Lancement Gunicorn
-  gunicorn --config "$API_CONF/api_gunicorn_conf.py" --chdir "$API_BIN" web_app:app &
-  deactivate
-  echo "..."
-  sleep 7
-  "$API_BIN/Status.sh"
+	echo "Starting gunicorn"
+	source $FRAUD_VENV/bin/activate
+	find $FRAUD_BIN | grep -E "(__pycache__|\.pyc|\.pyo$)" | xargs rm -rf
+	find $FRAUD_CONF | grep -E "(_pycache__|\.pyc|\.pyo$)" | xargs rm -rf
+	gunicorn --config $FRAUD_CONF/fraud_ws_config.py --chdir $FRAUD_BIN web:app &
+	deactivate
+	echo "..."
+	sleep 10
+	$FRAUD_BIN/Status_gunicorn.sh
 fi
-SH
-chmod +x "${PROJECT_ROOT}/bin/Start.sh"
-
-# ========= Stop.sh =========
-cat > "${PROJECT_ROOT}/bin/Stop.sh" <<'SH'
-#!/bin/bash
-set -euo pipefail
-
-ENV_FILE="$(dirname "$0")/../conf/.env"
-[ -f "${ENV_FILE}" ] && . "${ENV_FILE}"
-
-PIDFILE="${API_RUN}/gunicorn.pid"
-
-if test -f "$PIDFILE"; then
-  GUNI_PID=$(cat "$PIDFILE")
-  kill "$GUNI_PID" || true
-  echo "[OK] Gunicorn arrêté (PID ${GUNI_PID})"
-  rm "$PIDFILE" 2>/dev/null || true
-else
-  echo "[INFO] Aucun processus Gunicorn trouvé."
-fi
-SH
-chmod +x "${PROJECT_ROOT}/bin/Stop.sh"
-
-# ========= Status.sh =========
-cat > "${PROJECT_ROOT}/bin/Status.sh" <<'SH'
-#!/bin/bash
-set -euo pipefail
-
-ENV_FILE="$(dirname "$0")/../conf/.env"
-[ -f "${ENV_FILE}" ] && . "${ENV_FILE}"
-
-PIDFILE="${API_RUN}/gunicorn.pid"
-
-if test -f "$PIDFILE"; then
-  GUNI_PID=$(cat "$PIDFILE")
-  ListeProcess=$(ps -ef | grep "$GUNI_PID" | grep -v grep | wc -l || true)
-  if [ "$ListeProcess" = "0" ]; then
-    echo "[KO] Gunicorn (${GUNI_PID}) inactif"
-    exit 1
-  else
-    echo "[OK] Gunicorn (${GUNI_PID}) actif"
-    exit 0
-  fi
-else
-  echo "[KO] Aucun PID trouvé"
-  exit 1
-fi
-SH
-chmod +x "${PROJECT_ROOT}/bin/Status.sh"
-
-# ========= Config Gunicorn =========
-cat > "${PROJECT_ROOT}/conf/api_gunicorn_conf.py" <<'PY'
-import os
-from datetime import datetime
-
-prefix_date_file_name = datetime.now().strftime("%Y%m%d%H%M%S")
-
-API_RUN = os.getenv("API_RUN", "/tmp")
-API_LOG = os.getenv("API_LOG", "/tmp")
-API_CERTIFICATS = os.getenv("API_CERTIFICATS", "/tmp")
-
-API_HOST = os.getenv("API_HOST", "127.0.0.1")
-API_PORT = os.getenv("API_PORT", "8410")
-API_NB_WORKERS = int(os.getenv("API_NB_WORKERS", "2"))
-API_NB_THREADS = int(os.getenv("API_NB_THREADS", "2"))
-API_USER = os.getenv("API_USER", "")
-API_GROUP = os.getenv("API_GROUP", "")
-
-pidfile = f"{API_RUN}/gunicorn.pid"
-bind = f"{API_HOST}:{API_PORT}"
-accesslog = f"{API_LOG}/gunicorn_access-{prefix_date_file_name}.log"
-errorlog = f"{API_LOG}/gunicorn-{prefix_date_file_name}.log"
-access_log_format = '{"remote_addr":"%(h)s","method":"%(m)s","path":"%(U)s","status":%(s)s,"size":%(b)s}'
-capture_output = True
-enable_stdio_inheritance = True
-loglevel = "info"
-proc_name = "AttachmentIntegratorApi"
-workers = API_NB_WORKERS
-threads = API_NB_THREADS
-timeout = 0
-graceful_timeout = 0
-user = API_USER or None
-group = API_GROUP or None
-forwarded_allow_ips = "*"
-do_handshake_on_connect = False
-print_config = True
-reload = False
-PY
-
-# ========= web.py =========
-cat > "${PROJECT_ROOT}/bin/web.py" <<'PY'
-from flask import Blueprint, jsonify
-
-bp = Blueprint("v1_health", __name__)
-
-@bp.get("/live")
-def live():
-    return jsonify(status="OK", service="AttachmentIntegratorApi", version="v1")
-PY
-
-# ========= web_app.py =========
-cat > "${PROJECT_ROOT}/bin/web_app.py" <<'PY'
-from flask import Flask
-from web import bp as v1_health_bp
-
-app = Flask(__name__)
-app.register_blueprint(v1_health_bp, url_prefix="/api/v1/health")
-
-if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
-PY
-
-# ========= Certificats placeholders =========
-cat > "${PROJECT_ROOT}/certificats/127.0.0.1.pem" <<'CRT'
------BEGIN CERTIFICATE-----
-(placeholder demo certificate)
------END CERTIFICATE-----
-CRT
-
-cat > "${PROJECT_ROOT}/certificats/127.0.0.1.key" <<'KEY'
------BEGIN PRIVATE KEY-----
-(placeholder demo key)
------END PRIVATE KEY-----
-KEY
-
-# ========= Permissions & logs =========
-touch "${PROJECT_ROOT}/log/gunicorn_access-$(date +%Y%m%d%H%M%S).log"
-touch "${PROJECT_ROOT}/log/gunicorn-$(date +%Y%m%d%H%M%S).log"
-chmod +x "${PROJECT_ROOT}/bin/"*.sh
-
-# ========= Résumé =========
-cat <<OUT
-
-[✅ INSTALLATION TERMINÉE]
-Projet: ${PROJECT_NAME}
-Emplacement: ${PROJECT_ROOT}
-
-Étapes :
-  1️⃣  cd "${PROJECT_ROOT}"
-  2️⃣  python3.12 -m venv virtual && source virtual/bin/activate
-  3️⃣  pip install flask gunicorn
-  4️⃣  source conf/.env
-  5️⃣  ./bin/Start.sh
-  6️⃣  curl http://127.0.0.1:8410/api/v1/health/live
-
-Logs:
-  - log/gunicorn-*.log
-  - log/gunicorn_access-*.log
-
-OUT
