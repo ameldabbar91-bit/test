@@ -1,18 +1,1 @@
-#! /bin/bash
 
-PIDFILE=$FRAUD_RUN/gunicorn.pid
-
-if test -f "$PIDFILE"; then
-	GUNI_PID=`cat $PIDFILE`
-	ListeProcess=`ps -ef | grep $GUNI_PID | grep -v grep | wc -l`
-	if [ "$ListeProcess" == "0" ]; then
-		echo "gunicorn($GUNI_PID): KO"
-		exit 1
-	else
-		echo "gunicorn($GUNI_PID): OK"
-		exit 0
-	fi
-else
-	echo "gunicorn: KO"
-	exit 1
-fi
