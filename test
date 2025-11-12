@@ -1,1 +1,182 @@
+#!/bin/ksh
+# ============================================================
+#  install.sh – Installation complète de l'API Flask + Gunicorn
+#  Compatible Python 3.12 / Gunicorn 21.x / KornShell
+# ============================================================
+
+BASE_DIR="/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi"
+APP_NAME="AttachmentIntegratorApi"
+
+echo "=== [1/8] Création de l'arborescence ==="
+mkdir -p $BASE_DIR/{bin,conf,logs,tmp,$APP_NAME}
+
+# --- app.py ---
+cat > $BASE_DIR/$APP_NAME/app.py <<'EOF'
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
+EOF
+
+# --- __init__.py ---
+echo "# Package init" > $BASE_DIR/$APP_NAME/__init__.py
+
+# --- wsgi.py ---
+cat > $BASE_DIR/wsgi.py <<'EOF'
+from AttachmentIntegratorApi.app import app
+
+# Gunicorn cherche application par défaut
+application = app
+EOF
+
+# --- gunicorn.conf.py ---
+cat > $BASE_DIR/conf/gunicorn.conf.py <<'EOF'
+import multiprocessing
+
+bind = "127.0.0.1:5000"
+workers = max(2, multiprocessing.cpu_count() * 2 + 1)
+threads = 2
+worker_class = "sync"
+timeout = 120
+graceful_timeout = 50
+keepalive = 2
+
+loglevel = "info"
+accesslog = "/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi/logs/gunicorn_access.log"
+errorlog  = "/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi/logs/gunicorn_error.log"
+
+proc_name = "AttachmentIntegratorApi"
+pidfile   = "/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi/tmp/gunicorn.pid"
+EOF
+
+# --- requirements.txt ---
+cat > $BASE_DIR/requirements.txt <<'EOF'
+Flask==3.0.3
+gunicorn==21.2.0
+Flask-SQLAlchemy==3.1.1
+Flask-JWT-Extended==4.6.0
+Flask-Cors==4.0.1
+python-dotenv==1.0.1
+requests==2.32.3
+EOF
+
+# --- bin/Start.sh ---
+cat > $BASE_DIR/bin/Start.sh <<'EOF'
+#!/bin/ksh
+APP_DIR="/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi"
+CONF_FILE="$APP_DIR/conf/gunicorn.conf.py"
+PID_FILE="$APP_DIR/tmp/gunicorn.pid"
+
+echo "=== Starting Gunicorn ==="
+cd "$APP_DIR" || exit 1
+
+if [ -f "$APP_DIR/venv/bin/activate" ]; then
+  . "$APP_DIR/venv/bin/activate"
+fi
+
+if [ -f "$PID_FILE" ]; then
+  echo "Removing stale PID file..."
+  rm -f "$PID_FILE"
+fi
+
+gunicorn -c "$CONF_FILE" wsgi:application --daemon
+RC=$?
+if [ $RC -eq 0 ]; then
+  echo "✅ Gunicorn started successfully."
+else
+  echo "❌ Failed to start Gunicorn (code $RC). Check logs."
+fi
+EOF
+
+# --- bin/Stop.sh ---
+cat > $BASE_DIR/bin/Stop.sh <<'EOF'
+#!/bin/ksh
+APP_DIR="/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi"
+PID_FILE="$APP_DIR/tmp/gunicorn.pid"
+
+echo "=== Stopping Gunicorn ==="
+if [ -f "$PID_FILE" ]; then
+  PID=$(cat "$PID_FILE")
+  kill -TERM "$PID" >/dev/null 2>&1
+  sleep 1
+  rm -f "$PID_FILE"
+  echo "Gunicorn stopped (PID $PID)."
+else
+  pkill -f "gunicorn.*AttachmentIntegratorApi" >/dev/null 2>&1
+  echo "Gunicorn processes killed (if any)."
+fi
+EOF
+
+# --- bin/Status.sh ---
+cat > $BASE_DIR/bin/Status.sh <<'EOF'
+#!/bin/ksh
+APP_NAME="AttachmentIntegratorApi"
+PID_FILE="/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi/tmp/gunicorn.pid"
+
+if [ -f "$PID_FILE" ]; then
+  PID=$(cat "$PID_FILE")
+  ps -p "$PID" >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    echo "✅ Gunicorn ($APP_NAME) is running (PID: $PID)"
+    exit 0
+  fi
+fi
+
+pgrep -f "gunicorn.*$APP_NAME" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+  echo "✅ Gunicorn ($APP_NAME) is running (no PID file)"
+else
+  echo "❌ Gunicorn ($APP_NAME) is not running"
+fi
+EOF
+
+# --- bin/Debug.sh ---
+cat > $BASE_DIR/bin/Debug.sh <<'EOF'
+#!/bin/ksh
+APP_DIR="/srv/FircoContinuity/data/Etudes/SSE/new/AttachmentIntegratorApi"
+CONF_FILE="$APP_DIR/conf/gunicorn.conf.py"
+
+cd "$APP_DIR" || exit 1
+
+if [ -f "$APP_DIR/venv/bin/activate" ]; then
+  . "$APP_DIR/venv/bin/activate"
+fi
+
+echo "=== Debug mode: launching Gunicorn in foreground ==="
+gunicorn -c "$CONF_FILE" --log-level debug --capture-output wsgi:application
+EOF
+
+chmod +x $BASE_DIR/bin/*.sh
+
+echo "=== [2/8] Création du venv Python 3.12 ==="
+python3.12 -m venv $BASE_DIR/venv
+. $BASE_DIR/venv/bin/activate
+
+echo "=== [3/8] Installation des dépendances ==="
+pip install --upgrade pip >/dev/null
+pip install -r $BASE_DIR/requirements.txt
+
+echo "=== [4/8] Vérification du lancement Flask ==="
+python - <<'PY'
+from AttachmentIntegratorApi.app import app
+print("✅ Import Flask app OK:", app)
+PY
+
+echo "=== [5/8] Démarrage de Gunicorn ==="
+$BASE_DIR/bin/Start.sh
+
+echo "=== [6/8] Vérification du statut ==="
+$BASE_DIR/bin/Status.sh
+
+echo "=== [7/8] Test HTTP /health ==="
+curl -s http://127.0.0.1:5000/health || echo "(Aucune réponse – vérifier les logs)"
+
+echo "=== [8/8] Installation terminée ==="
+echo "Dossier: $BASE_DIR"
+echo "Gunicorn config: $BASE_DIR/conf/gunicorn.conf.py"
+echo "Pour démarrer : $BASE_DIR/bin/Start.sh"
+echo "Pour stopper  : $BASE_DIR/bin/Stop.sh"
 
