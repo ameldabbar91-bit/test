@@ -1,38 +1,46 @@
-# -*- coding: utf-8 -*-
+"""
+Extensions optionnelles :
+- SQLAlchemy
+- JWT
+- Oracle thick (python-oracledb)
+Tout est encapsulé pour NE PAS bloquer le démarrage si absent/mal config.
+"""
+
 import os
 
-API_NAME  = os.getenv("API_NAME", "AttachmentIntegratorApi")
-API_HOST  = os.getenv("API_HOST", "127.0.0.1")
-API_PORT  = int(os.getenv("API_PORT", "8410"))
-API_BIN   = os.getenv("API_BIN")                   # ex: /.../AttachmentIntegratorApi/bin
-API_RUN   = os.getenv("API_RUN", "/tmp")
-API_LOG   = os.getenv("API_LOG", "/tmp")
-USE_UNIX  = os.getenv("USE_UNIX_SOCKET", "false").lower() == "true"
-API_SOCK  = os.getenv("API_SOCK", os.path.join(API_RUN, "gunicorn.sock"))
+# SQLAlchemy (optionnel)
+try:
+    from flask_sqlalchemy import SQLAlchemy
+    db = SQLAlchemy()
+except Exception:
+    db = None
 
-# — clé de voûte : placement + module WSGI —
-chdir    = API_BIN                     # Gunicorn se place dans .../bin
-wsgi_app = "app.wsgi:app"              # charge app depuis app/wsgi.py
+# JWT (optionnel)
+try:
+    from flask_jwt_extended import JWTManager
+    jwt = JWTManager()
+except Exception:
+    jwt = None
 
-bind = f"unix:{API_SOCK}" if USE_UNIX else f"{API_HOST}:{API_PORT}"
+# Oracle thick (optionnel)
+def init_oracle_client_if_configured(app):
+    """
+    Active python-oracledb en mode THICK si demandé (ORACLE_THICK_MODE=true).
+    Sans exception bloquante.
+    """
+    try:
+        use_thick = os.getenv("ORACLE_THICK_MODE", "false").lower() == "true"
+        if not use_thick:
+            app.logger.info("Oracle thick désactivé (ORACLE_THICK_MODE=false).")
+            return
 
-workers  = int(os.getenv("API_NB_WORKERS", "2"))
-threads  = int(os.getenv("API_NB_THREADS", "1"))
-timeout  = int(os.getenv("API_TIMEOUT", "120"))
-graceful_timeout = int(os.getenv("API_GRACEFUL_TIMEOUT", "30"))
-keepalive = int(os.getenv("API_KEEPALIVE", "5"))
-worker_class = os.getenv("API_WORKER_CLASS", "sync")
-max_requests = int(os.getenv("API_MAX_REQUESTS", "1000"))
-max_requests_jitter = int(os.getenv("API_MAX_REQUESTS_JITTER", "50"))
-
-pidfile     = os.path.join(API_RUN, f"{API_NAME}.pid")
-errorlog    = os.path.join(API_LOG, "gunicorn.error.log")
-accesslog   = os.path.join(API_LOG, "gunicorn.access.log")
-loglevel    = os.getenv("LOG_LEVEL", "info").lower()
-capture_output = True
-print_config   = True
-proc_name      = API_NAME
-umask          = 0o27
-
-def when_ready(server):
-    print(f"[when_ready] {API_NAME} prêt. bind={bind} workers={workers} threads={threads}")
+        import oracledb
+        lib_dir = os.getenv("ORACLE_HOME")
+        cfg_dir = os.getenv("ORACLE_CONFIG_DIR")
+        if lib_dir:
+            oracledb.init_oracle_client(lib_dir=lib_dir, config_dir=cfg_dir)
+            app.logger.info("Oracle client initialisé en mode THICK (lib_dir=%s).", lib_dir)
+        else:
+            app.logger.warning("ORACLE_HOME non défini: thick non initialisé.")
+    except Exception as exc:
+        app.logger.warning("Oracle init skip/fail (non bloquant): %s", exc)
