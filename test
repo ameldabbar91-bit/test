@@ -1,24 +1,17 @@
-import psutil
-import time
-from statistics import mean, deque
+from flask import Blueprint, jsonify
+from api.helpers.metrics import get_system_metrics, get_average_response_time
 
-# Dictionnaire global pour stocker les temps de réponse
-request_times = deque(maxlen=100)  # moyenne glissante sur 100 requêtes max
+health_bp = Blueprint("health", __name__)
 
-def record_response_time(duration: float):
-    """Ajoute un temps de réponse dans l'historique."""
-    request_times.append(duration)
+@health_bp.route("/health", methods=["GET"])
+def health():
+    system = get_system_metrics()
+    avg_time = get_average_response_time()
 
-def get_average_response_time():
-    """Retourne le temps moyen de réponse en ms."""
-    if not request_times:
-        return 0.0
-    return round(mean(request_times), 2)
-
-def get_system_metrics():
-    """Retourne CPU, RAM, uptime du système."""
-    return {
-        "cpu_percent": psutil.cpu_percent(interval=0.2),
-        "memory_percent": psutil.virtual_memory().percent,
-        "uptime_seconds": int(time.time() - psutil.boot_time()),
+    data = {
+        "status": "ok",
+        "system": system,
+        "average_response_time_ms": avg_time,
+        "monitored_endpoint": "PUT /integrator/attachement"
     }
+    return jsonify(data), 200
