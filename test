@@ -8,19 +8,21 @@ db = SQLAlchemy()
 
 def init_sqlalchemy(app=None) -> None:
     """
-    Initialise SQLAlchemy pour une base Oracle.
+    Initialise SQLAlchemy pour une base Oracle avec pool de connexions.
 
-    - lit la conf dans les variables d'environnement :
+    Variables d'environnement utilisées :
         ORACLE_USER
         ORACLE_PASSWORD
-        ORACLE_HOST      (par défaut: localhost)
-        ORACLE_PORT      (par défaut: 1521)
-        ORACLE_SERVICE_NAME  ou ORACLE_SID
-        ORACLE_CLIENT_LIB_DIR (chemin du client Oracle optionnel)
-        ORACLE_CONFIG_DIR     (tnsnames.ora, sqlnet.ora, … optionnel)
-    - initialise oracledb.init_oracle_client (une seule fois)
-    - configure app.config['SQLALCHEMY_DATABASE_URI']
-    - attache l'instance db à l’app
+        ORACLE_HOST            (défaut: localhost)
+        ORACLE_PORT            (défaut: 1521)
+        ORACLE_SERVICE_NAME    ou ORACLE_SID
+        ORACLE_CLIENT_LIB_DIR  (optionnel)
+        ORACLE_CONFIG_DIR      (optionnel)
+
+        DB_POOL_SIZE           (défaut: 5)
+        DB_MAX_OVERFLOW        (défaut: 10)
+        DB_POOL_TIMEOUT        (défaut: 30 sec)
+        DB_POOL_RECYCLE        (défaut: 1800 sec)
     """
     if app is None:
         app = current_app
@@ -53,19 +55,31 @@ def init_sqlalchemy(app=None) -> None:
         raise RuntimeError("ORACLE_USER et ORACLE_PASSWORD doivent être définis.")
 
     if service_name:
-        # Connexion via service_name
         dsn = f"{host}:{port}/?service_name={service_name}"
     elif sid:
-        # Connexion via SID
         dsn = f"{host}:{port}/{sid}"
     else:
         raise RuntimeError("Définir ORACLE_SERVICE_NAME ou ORACLE_SID.")
 
     db_uri = f"oracle+oracledb://{user}:{password}@{dsn}"
 
+    # --- Pool de connexions SQLAlchemy ---
+    pool_size = int(os.getenv("DB_POOL_SIZE", "5"))
+    max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+
+    engine_options = {
+        "pool_pre_ping": True,        # vérifie la connexion avant utilisation
+        "pool_size": pool_size,
+        "max_overflow": max_overflow,
+        "pool_timeout": pool_timeout,
+        "pool_recycle": pool_recycle,
+    }
+
     # --- Configuration de Flask / SQLAlchemy ---
     app.config.setdefault("SQLALCHEMY_DATABASE_URI", db_uri)
     app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
-    app.config.setdefault("SQLALCHEMY_ENGINE_OPTIONS", {"pool_pre_ping": True})
+    app.config.setdefault("SQLALCHEMY_ENGINE_OPTIONS", engine_options)
 
     db.init_app(app)
