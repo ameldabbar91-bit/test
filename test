@@ -10,6 +10,7 @@ addopts =
     --strict-markers
     --cov=api
     --cov-report=term-missing
+    --flake8          # <— ICI on dit à pytest de lancer flake8
 
 markers =
     unit: tests unitaires
@@ -27,3 +28,18 @@ norecursedirs =
     tmp
     logs
     run
+
+# ----------- CONFIG FLAKE8 ------------------
+[flake8]
+max-line-length = 120
+exclude =
+    virtual,
+    tmp,
+    logs,
+    run,
+    __pycache__,
+    .git,
+    .tox
+ignore =
+    E203,  # slicing spacing (compat black)
+    W503   # line break before binary operator
