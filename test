@@ -1,45 +1,53 @@
-[pytest]
-testpaths = tests
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
+import os
+import pytest
 
-addopts =
-    -vv
-    --disable-warnings
-    --strict-markers
-    --cov=api
-    --cov-report=term-missing
-    --flake8          # <— ICI on dit à pytest de lancer flake8
+# ⚠️ Adapte l'import à ton projet si besoin
+# On suppose que tu as une factory create_app dans api/app.py
+from api.app import create_app
 
-markers =
-    unit: tests unitaires
-    integration: tests d’intégration
-    functional: tests fonctionnels (S3, DB, etc.)
-    gunicorn: tests spécifiques à Gunicorn
-    slow: tests lents
 
-filterwarnings =
-    ignore::DeprecationWarning
-    ignore::PendingDeprecationWarning
+@pytest.fixture(scope="session")
+def app():
+    """
+    Application Flask pour les tests.
+    - Passe l'app en mode TESTING
+    - Permet d'injecter une config spéciale si besoin.
+    """
+    # Variables pour que ton code sache qu'on est en test
+    os.environ.setdefault("FLASK_ENV", "testing")
+    os.environ.setdefault("TESTING", "1")
 
-norecursedirs =
-    virtual
-    tmp
-    logs
-    run
+    # Si tu veux une DB de test, configure ici :
+    # os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
-# ----------- CONFIG FLAKE8 ------------------
-[flake8]
-max-line-length = 120
-exclude =
-    virtual,
-    tmp,
-    logs,
-    run,
-    __pycache__,
-    .git,
-    .tox
-ignore =
-    E203,  # slicing spacing (compat black)
-    W503   # line break before binary operator
+    app = create_app(testing=True)
+
+    # Optionnel : désactiver le CSRF, les logs verbeux, etc.
+    app.config.setdefault("WTF_CSRF_ENABLED", False)
+
+    yield app
+
+
+@pytest.fixture()
+def client(app):
+    """
+    Client HTTP Flask pour les tests (équivalent à requests mais en mémoire).
+    """
+    return app.test_client()
+
+
+@pytest.fixture()
+def runner(app):
+    """
+    Pour tester des commandes CLI Flask éventuellement.
+    """
+    return app.test_cli_runner()
+
+
+@pytest.fixture(scope="session")
+def api_base_path():
+    """
+    Préfixe des routes de ton API.
+    Par défaut: /integrator/v1 (modifiable via API_BASE_PATH).
+    """
+    return os.getenv("API_BASE_PATH", "/integrator/v1")
