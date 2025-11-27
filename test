@@ -1,53 +1,215 @@
+
+#!/bin/bash
+
+set -e
+
+echo "📁 Création de l'arborescence complète du dossier tests..."
+
+###########################################################
+# ARBORESCENCE
+###########################################################
+mkdir -p tests/unit/helpers
+mkdir -p tests/unit/services
+mkdir -p tests/unit/infra
+mkdir -p tests/integration
+mkdir -p tests/functional
+
+echo "# package init" > tests/__init__.py
+echo "# package init" > tests/unit/__init__.py
+echo "# package init" > tests/unit/helpers/__init__.py
+echo "# package init" > tests/unit/services/__init__.py
+echo "# package init" > tests/unit/infra/__init__.py
+echo "# package init" > tests/integration/__init__.py
+echo "# package init" > tests/functional/__init__.py
+
+
+###########################################################
+# GLOBAL CONFTEST
+###########################################################
+cat << 'EOF' > tests/conftest.py
 import os
+import sys
 import pytest
 
-# ⚠️ Adapte l'import à ton projet si besoin
-# On suppose que tu as une factory create_app dans api/app.py
+# --- Assure que Python trouve la racine du projet ---
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+# Import de ton app Flask
 from api.app import create_app
 
 
 @pytest.fixture(scope="session")
 def app():
-    """
-    Application Flask pour les tests.
-    - Passe l'app en mode TESTING
-    - Permet d'injecter une config spéciale si besoin.
-    """
-    # Variables pour que ton code sache qu'on est en test
     os.environ.setdefault("FLASK_ENV", "testing")
     os.environ.setdefault("TESTING", "1")
-
-    # Si tu veux une DB de test, configure ici :
-    # os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
-
     app = create_app(testing=True)
-
-    # Optionnel : désactiver le CSRF, les logs verbeux, etc.
-    app.config.setdefault("WTF_CSRF_ENABLED", False)
-
     yield app
 
 
 @pytest.fixture()
 def client(app):
-    """
-    Client HTTP Flask pour les tests (équivalent à requests mais en mémoire).
-    """
     return app.test_client()
 
 
-@pytest.fixture()
-def runner(app):
-    """
-    Pour tester des commandes CLI Flask éventuellement.
-    """
-    return app.test_cli_runner()
+# Import automatique des autres conftests
+from .unit_conftest import *         # noqa
+from .integration_conftest import *  # noqa
+from .functional_conftest import *   # noqa
+EOF
 
+
+###########################################################
+# UNIT CONFTEST
+###########################################################
+cat << 'EOF' > tests/unit_conftest.py
+import pytest
 
 @pytest.fixture(scope="session")
-def api_base_path():
-    """
-    Préfixe des routes de ton API.
-    Par défaut: /integrator/v1 (modifiable via API_BASE_PATH).
-    """
-    return os.getenv("API_BASE_PATH", "/integrator/v1")
+def unit_env():
+    return {"scope": "unit"}
+
+@pytest.fixture()
+def dummy_unit_data():
+    return {"value": 42}
+EOF
+
+
+###########################################################
+# INTEGRATION CONFTEST
+###########################################################
+cat << 'EOF' > tests/integration_conftest.py
+import pytest
+import os
+
+@pytest.fixture(scope="session")
+def integration_env():
+    return {
+        "scope": "integration",
+        "db_url": os.getenv("INTEGRATION_DATABASE_URL"),
+    }
+
+@pytest.fixture()
+def integration_headers():
+    return {
+        "X-Test-Scope": "integration"
+    }
+EOF
+
+
+###########################################################
+# FUNCTIONAL CONFTEST
+###########################################################
+cat << 'EOF' > tests/functional_conftest.py
+import pytest
+import os
+
+@pytest.fixture(scope="session")
+def functional_enabled():
+    return os.getenv("RUN_FUNCTIONAL_TESTS") == "1"
+
+@pytest.fixture()
+def functional_env(functional_enabled):
+    return {
+        "scope": "functional",
+        "enabled": functional_enabled
+    }
+EOF
+
+
+###########################################################
+# UNIT TESTS
+###########################################################
+
+# test_import_app.py
+cat << 'EOF' > tests/unit/test_import_app.py
+def test_import_app():
+    from api.app import create_app
+    app = create_app(testing=True)
+    assert app is not None
+EOF
+
+# test_helpers_dummy.py
+cat << 'EOF' > tests/unit/helpers/test_helpers_dummy.py
+import pytest
+
+@pytest.mark.unit
+def test_dummy_helper(unit_env, dummy_unit_data):
+    assert unit_env["scope"] == "unit"
+    assert dummy_unit_data["value"] == 42
+EOF
+
+# test_services_s3_dummy.py
+cat << 'EOF' > tests/unit/services/test_services_s3_dummy.py
+import pytest
+
+@pytest.mark.unit
+def test_dummy_service(unit_env):
+    assert unit_env["scope"] == "unit"
+EOF
+
+# test_gunicorn_conf.py
+cat << 'EOF' > tests/unit/infra/test_gunicorn_conf.py
+import importlib
+import pytest
+
+@pytest.mark.unit
+@pytest.mark.gunicorn
+def test_gunicorn_conf():
+    try:
+        conf = importlib.import_module("conf.gunicorn_conf")
+    except Exception:
+        pytest.skip("conf/gunicorn_conf.py non trouvé")
+    
+    assert hasattr(conf, "bind")
+    assert hasattr(conf, "workers")
+    assert isinstance(conf.bind, str)
+EOF
+
+
+###########################################################
+# INTEGRATION TESTS
+###########################################################
+cat << 'EOF' > tests/integration/test_health_route.py
+import pytest
+
+@pytest.mark.integration
+def test_health_live(client):
+    resp = client.get("/integrator/v1/health/live")
+    assert resp.status_code == 200
+    assert isinstance(resp.get_json(), dict)
+
+@pytest.mark.integration
+def test_health_ready(client):
+    resp = client.get("/integrator/v1/health/ready")
+    assert resp.status_code in (200, 503)
+EOF
+
+
+###########################################################
+# FUNCTIONAL TESTS
+###########################################################
+cat << 'EOF' > tests/functional/test_file_upload_flow.py
+import os
+import io
+import pytest
+
+@pytest.mark.functional
+@pytest.mark.skipif(
+    os.getenv("RUN_FUNCTIONAL_TESTS") != "1",
+    reason="RUN_FUNCTIONAL_TESTS != 1 — test fonctionnel désactivé"
+)
+def test_file_upload_flow(client):
+    data = {
+        "file": (io.BytesIO(b"hello world"), "test.txt"),
+    }
+    resp = client.post(
+        "/integrator/v1/files",
+        data=data,
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code in (200, 201)
+EOF
+
+echo "✅ Tous les fichiers tests ont été générés avec succès !"
