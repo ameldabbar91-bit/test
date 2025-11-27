@@ -213,3 +213,43 @@ def test_file_upload_flow(client):
 EOF
 
 echo "✅ Tous les fichiers tests ont été générés avec succès !"
+
+
+
+
+
+
+
+
+
+
+
+[pytest]
+testpaths = tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+
+addopts =
+    -vv
+    --disable-warnings
+    --strict-markers
+    --cov=api
+    --cov-report=term-missing
+
+markers =
+    unit: tests unitaires
+    integration: tests d’intégration
+    functional: tests fonctionnels (S3, DB, etc.)
+    gunicorn: tests spécifiques à Gunicorn
+    slow: tests lents
+
+filterwarnings =
+    ignore::DeprecationWarning
+    ignore::PendingDeprecationWarning
+
+norecursedirs =
+    virtual
+    tmp
+    logs
+    run
