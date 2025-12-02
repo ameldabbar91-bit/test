@@ -1,255 +1,441 @@
 
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+# Racine du projet (dossier courant)
+PROJECT_ROOT="$(pwd)"
 
-echo "📁 Création de l'arborescence complète du dossier tests..."
+echo "Création du projet Flask + SQLAlchemy + Oracle (thin mode) dans : $PROJECT_ROOT"
 
-###########################################################
-# ARBORESCENCE
-###########################################################
-mkdir -p tests/unit/helpers
-mkdir -p tests/unit/services
-mkdir -p tests/unit/infra
-mkdir -p tests/integration
-mkdir -p tests/functional
+########################################
+# Dossiers
+########################################
 
-echo "# package init" > tests/__init__.py
-echo "# package init" > tests/unit/__init__.py
-echo "# package init" > tests/unit/helpers/__init__.py
-echo "# package init" > tests/unit/services/__init__.py
-echo "# package init" > tests/unit/infra/__init__.py
-echo "# package init" > tests/integration/__init__.py
-echo "# package init" > tests/functional/__init__.py
+mkdir -p "$PROJECT_ROOT/conf"
+mkdir -p "$PROJECT_ROOT/api/models"
+mkdir -p "$PROJECT_ROOT/api/routes"
+mkdir -p "$PROJECT_ROOT/tests/unit"
+mkdir -p "$PROJECT_ROOT/tests/integration"
 
+########################################
+# Fichier conf/.env
+########################################
 
-###########################################################
-# GLOBAL CONFTEST
-###########################################################
-cat << 'EOF' > tests/conftest.py
+cat > "$PROJECT_ROOT/conf/.env" << 'EOF'
+# Variables Oracle (à adapter à ton environnement)
+ORACLE_USER=system
+ORACLE_PASSWORD=oraclepwd
+ORACLE_HOST=192.168.1.20
+ORACLE_PORT=1521
+ORACLE_SERVICE=ORCLPDB1
+
+# Log applicatif (optionnel)
+LOG_LEVEL=INFO
+EOF
+
+echo "Créé : conf/.env"
+
+########################################
+# Fichier api/__init__.py
+########################################
+
+cat > "$PROJECT_ROOT/api/__init__.py" << 'EOF'
+# Rend le dossier api importable comme un package Python.
+# Exemple d'utilisation :
+#   from api.app import create_app
+EOF
+
+echo "Créé : api/__init__.py"
+
+########################################
+# Fichier api/extensions.py
+########################################
+
+cat > "$PROJECT_ROOT/api/extensions.py" << 'EOF'
 import os
-import sys
-import pytest
+import logging
 
-# --- Assure que Python trouve la racine du projet ---
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, scoped_session, declarative_base
 
-# Import de ton app Flask
-from api.app import create_app
+# Base ORM partagée pour tous les modèles
+Base = declarative_base()
 
-
-@pytest.fixture(scope="session")
-def app():
-    os.environ.setdefault("FLASK_ENV", "testing")
-    os.environ.setdefault("TESTING", "1")
-    app = create_app(testing=True)
-    yield app
+_engine = None
+SessionLocal = None
 
 
-@pytest.fixture()
-def client(app):
-    return app.test_client()
+def _build_oracle_url() -> str:
+    """
+    Construit l'URL de connexion SQLAlchemy pour Oracle (driver oracledb, mode thin).
+    Format : oracle+oracledb://user:pwd@host:port/?service_name=SERVICE
+    """
+    user = os.getenv("ORACLE_USER")
+    password = os.getenv("ORACLE_PASSWORD")
+    host = os.getenv("ORACLE_HOST", "localhost")
+    port = os.getenv("ORACLE_PORT", "1521")
+    service = os.getenv("ORACLE_SERVICE")
+
+    if not all([user, password, host, port, service]):
+        raise RuntimeError(
+            "Variables d'environnement Oracle manquantes : "
+            "ORACLE_USER, ORACLE_PASSWORD, ORACLE_HOST, ORACLE_PORT, ORACLE_SERVICE"
+        )
+
+    return f"oracle+oracledb://{user}:{password}@{host}:{port}/?service_name={service}"
 
 
-# Import automatique des autres conftests
-from .unit_conftest import *         # noqa
-from .integration_conftest import *  # noqa
-from .functional_conftest import *   # noqa
-EOF
+def init_engine(app=None):
+    """
+    Initialise l'engine SQLAlchemy global + la Session ORM (SessionLocal).
 
+    À appeler une seule fois, typiquement dans create_app().
+    """
+    global _engine, SessionLocal
 
-###########################################################
-# UNIT CONFTEST
-###########################################################
-cat << 'EOF' > tests/unit_conftest.py
-import pytest
+    if _engine is not None:
+        # Déjà initialisé
+        return _engine
 
-@pytest.fixture(scope="session")
-def unit_env():
-    return {"scope": "unit"}
+    database_url = _build_oracle_url()
 
-@pytest.fixture()
-def dummy_unit_data():
-    return {"value": 42}
-EOF
+    # Niveau de log (optionnel)
+    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
 
-
-###########################################################
-# INTEGRATION CONFTEST
-###########################################################
-cat << 'EOF' > tests/integration_conftest.py
-import pytest
-import os
-
-@pytest.fixture(scope="session")
-def integration_env():
-    return {
-        "scope": "integration",
-        "db_url": os.getenv("INTEGRATION_DATABASE_URL"),
-    }
-
-@pytest.fixture()
-def integration_headers():
-    return {
-        "X-Test-Scope": "integration"
-    }
-EOF
-
-
-###########################################################
-# FUNCTIONAL CONFTEST
-###########################################################
-cat << 'EOF' > tests/functional_conftest.py
-import pytest
-import os
-
-@pytest.fixture(scope="session")
-def functional_enabled():
-    return os.getenv("RUN_FUNCTIONAL_TESTS") == "1"
-
-@pytest.fixture()
-def functional_env(functional_enabled):
-    return {
-        "scope": "functional",
-        "enabled": functional_enabled
-    }
-EOF
-
-
-###########################################################
-# UNIT TESTS
-###########################################################
-
-# test_import_app.py
-cat << 'EOF' > tests/unit/test_import_app.py
-def test_import_app():
-    from api.app import create_app
-    app = create_app(testing=True)
-    assert app is not None
-EOF
-
-# test_helpers_dummy.py
-cat << 'EOF' > tests/unit/helpers/test_helpers_dummy.py
-import pytest
-
-@pytest.mark.unit
-def test_dummy_helper(unit_env, dummy_unit_data):
-    assert unit_env["scope"] == "unit"
-    assert dummy_unit_data["value"] == 42
-EOF
-
-# test_services_s3_dummy.py
-cat << 'EOF' > tests/unit/services/test_services_s3_dummy.py
-import pytest
-
-@pytest.mark.unit
-def test_dummy_service(unit_env):
-    assert unit_env["scope"] == "unit"
-EOF
-
-# test_gunicorn_conf.py
-cat << 'EOF' > tests/unit/infra/test_gunicorn_conf.py
-import importlib
-import pytest
-
-@pytest.mark.unit
-@pytest.mark.gunicorn
-def test_gunicorn_conf():
-    try:
-        conf = importlib.import_module("conf.gunicorn_conf")
-    except Exception:
-        pytest.skip("conf/gunicorn_conf.py non trouvé")
-    
-    assert hasattr(conf, "bind")
-    assert hasattr(conf, "workers")
-    assert isinstance(conf.bind, str)
-EOF
-
-
-###########################################################
-# INTEGRATION TESTS
-###########################################################
-cat << 'EOF' > tests/integration/test_health_route.py
-import pytest
-
-@pytest.mark.integration
-def test_health_live(client):
-    resp = client.get("/integrator/v1/health/live")
-    assert resp.status_code == 200
-    assert isinstance(resp.get_json(), dict)
-
-@pytest.mark.integration
-def test_health_ready(client):
-    resp = client.get("/integrator/v1/health/ready")
-    assert resp.status_code in (200, 503)
-EOF
-
-
-###########################################################
-# FUNCTIONAL TESTS
-###########################################################
-cat << 'EOF' > tests/functional/test_file_upload_flow.py
-import os
-import io
-import pytest
-
-@pytest.mark.functional
-@pytest.mark.skipif(
-    os.getenv("RUN_FUNCTIONAL_TESTS") != "1",
-    reason="RUN_FUNCTIONAL_TESTS != 1 — test fonctionnel désactivé"
-)
-def test_file_upload_flow(client):
-    data = {
-        "file": (io.BytesIO(b"hello world"), "test.txt"),
-    }
-    resp = client.post(
-        "/integrator/v1/files",
-        data=data,
-        content_type="multipart/form-data",
+    _engine = create_engine(
+        database_url,
+        echo=False,          # True pour debug SQL, False en prod
+        pool_pre_ping=True,  # Vérifie la connexion avant usage
+        # Exemple de paramètres de pool si besoin :
+        # pool_size=5,
+        # max_overflow=10,
+        # pool_timeout=30,
     )
-    assert resp.status_code in (200, 201)
+
+    SessionLocal = scoped_session(
+        sessionmaker(
+            bind=_engine,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+    )
+
+    # Log SQLAlchemy (optionnel)
+    logging.getLogger("sqlalchemy.engine").setLevel(log_level)
+
+    # Enregistrement du teardown Flask si app fournie
+    if app is not None:
+        register_db_handlers(app)
+
+    return _engine
+
+
+def register_db_handlers(app):
+    """
+    Enregistre les handlers Flask pour fermer la session à la fin de chaque requête.
+    À appeler depuis create_app une fois l'engine initialisé.
+    """
+
+    @app.teardown_appcontext
+    def remove_session(exception=None):
+        if SessionLocal is not None:
+            SessionLocal.remove()
+
+
+def get_db():
+    """
+    Dépendance type "context manager" :
+
+        from api.extensions import get_db
+
+        with next(get_db()) as db:
+            ...
+    """
+    if SessionLocal is None:
+        init_engine()
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_engine():
+    """
+    Récupérer l'engine brut si besoin (pour des requêtes SQL directes).
+    """
+    if _engine is None:
+        init_engine()
+    return _engine
 EOF
 
-echo "✅ Tous les fichiers tests ont été générés avec succès !"
+echo "Créé : api/extensions.py"
+
+########################################
+# Fichiers models
+########################################
+
+cat > "$PROJECT_ROOT/api/models/__init__.py" << 'EOF'
+from api.extensions import Base  # Base déclarative partagée
+
+# Import des modèles pour qu'ils soient enregistrés sur Base.metadata
+from .user import User  # noqa: F401
+EOF
+
+echo "Créé : api/models/__init__.py"
+
+cat > "$PROJECT_ROOT/api/models/user.py" << 'EOF'
+from datetime import datetime
+
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
+
+from api.extensions import Base
 
 
+class User(Base):
+    __tablename__ = "USERS"  # Attention à la casse si la table est créée en majuscules
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False, unique=True)
+    first_name = Column(String(100), nullable=True)
+    last_name = Column(String(100), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<User id={self.id} email={self.email!r}>"
+EOF
+
+echo "Créé : api/models/user.py"
+
+########################################
+# Fichiers routes
+########################################
+
+cat > "$PROJECT_ROOT/api/routes/__init__.py" << 'EOF'
+# Ce fichier peut rester vide ou servir à regrouper tes blueprints.
+EOF
+
+echo "Créé : api/routes/__init__.py"
+
+cat > "$PROJECT_ROOT/api/routes/health.py" << 'EOF'
+from flask import Blueprint, jsonify
+
+from api.extensions import get_engine, SessionLocal
+from api.models import User
+
+health_bp = Blueprint("health", __name__)
 
 
+@health_bp.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
 
 
+@health_bp.route("/health/db", methods=["GET"])
+def health_db():
+    # Test connexion brute
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            conn.execute("SELECT 1 FROM dual")
+    except Exception as e:
+        return jsonify({"status": "error", "details": str(e)}), 500
+
+    # Test ORM : lire un utilisateur
+    db = SessionLocal()
+    try:
+        user = db.query(User).first()
+        if user:
+            return jsonify(
+                {
+                    "status": "ok",
+                    "sample_user_email": user.email,
+                    "sample_user_id": user.id,
+                }
+            )
+        else:
+            return jsonify(
+                {
+                    "status": "ok",
+                    "sample_user_email": None,
+                    "sample_user_id": None,
+                }
+            )
+    finally:
+        db.close()
+EOF
+
+echo "Créé : api/routes/health.py"
+
+########################################
+# Fichier api/app.py
+########################################
+
+cat > "$PROJECT_ROOT/api/app.py" << 'EOF'
+from flask import Flask
+
+from api.extensions import init_engine, register_db_handlers, get_engine
+from api.models import Base
+from api.routes.health import health_bp
 
 
+def create_app():
+    app = Flask(__name__)
+
+    # 1. Init engine + session
+    init_engine(app)
+    register_db_handlers(app)
+
+    # 2. (Optionnel) Création des tables en DEV uniquement
+    #    À ne pas faire en prod, préférer des migrations (Alembic).
+    with app.app_context():
+        engine = get_engine()
+        Base.metadata.create_all(bind=engine)
+
+    # 3. Enregistrer les blueprints
+    app.register_blueprint(health_bp, url_prefix="/api")
+
+    return app
 
 
+# Pour lancer avec : python -m api.app
+if __name__ == "__main__":
+    app = create_app()
+    app.run(debug=True)
+EOF
 
+echo "Créé : api/app.py"
+
+########################################
+# Pytest config
+########################################
+
+cat > "$PROJECT_ROOT/pytest.ini" << 'EOF'
 [pytest]
 testpaths = tests
 python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
-
-addopts =
-    -vv
-    --disable-warnings
-    --strict-markers
-    --cov=api
-    --cov-report=term-missing
 
 markers =
-    unit: tests unitaires
-    integration: tests d’intégration
-    functional: tests fonctionnels (S3, DB, etc.)
-    gunicorn: tests spécifiques à Gunicorn
-    slow: tests lents
+    integration: tests qui nécessitent une vraie connexion DB Oracle
+EOF
 
-filterwarnings =
-    ignore::DeprecationWarning
-    ignore::PendingDeprecationWarning
+echo "Créé : pytest.ini"
 
-norecursedirs =
-    virtual
-    tmp
-    logs
-    run
+########################################
+# Tests unitaires
+########################################
+
+cat > "$PROJECT_ROOT/tests/unit/test_user_model.py" << 'EOF'
+from api.models.user import User
+
+
+def test_user_model_basic_fields():
+    user = User(
+        email="test@example.com",
+        first_name="John",
+        last_name="Doe",
+        is_active=True,
+    )
+
+    assert user.email == "test@example.com"
+    assert user.first_name == "John"
+    assert user.last_name == "Doe"
+    assert user.is_active is True
+
+
+def test_user_repr_contains_email():
+    user = User(email="test@example.com")
+    assert "test@example.com" in repr(user)
+EOF
+
+echo "Créé : tests/unit/test_user_model.py"
+
+########################################
+# Tests d'intégration
+########################################
+
+cat > "$PROJECT_ROOT/tests/integration/test_db_connection.py" << 'EOF'
+import pytest
+
+from api.extensions import init_engine, get_engine, SessionLocal
+from api.models import User, Base
+
+
+@pytest.mark.integration
+def test_db_connect_and_select_dual():
+    """
+    Test d'intégration simple : vérifie qu'on peut se connecter à Oracle
+    et exécuter un SELECT 1 FROM dual.
+    """
+    init_engine()
+    engine = get_engine()
+
+    with engine.connect() as conn:
+        result = conn.execute("SELECT 1 FROM dual")
+        row = result.fetchone()
+
+    assert row is not None
+    # Suivant les drivers, row[0] peut être 1 ou '1'
+    assert str(row[0]) == "1"
+
+
+@pytest.mark.integration
+def test_db_can_insert_user():
+    """
+    Test d'intégration ORM :
+    - crée les tables (si pas déjà créé)
+    - insère un User
+    - le relit
+    """
+    init_engine()
+    engine = get_engine()
+
+    # Création des tables pour le test (en général, on le fait dans un setup dédié)
+    Base.metadata.create_all(bind=engine)
+
+    db = SessionLocal()
+    try:
+        user = User(
+            email="integration@test.com",
+            first_name="Int",
+            last_name="Test",
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+
+        # Recharge l'utilisateur
+        u = db.query(User).filter_by(email="integration@test.com").first()
+        assert u is not None
+        assert u.email == "integration@test.com"
+        assert u.is_active is True
+    finally:
+        db.rollback()
+        db.close()
+EOF
+
+echo "Créé : tests/integration/test_db_connection.py"
+
+########################################
+# requirements.txt (pratique)
+########################################
+
+cat > "$PROJECT_ROOT/requirements.txt" << 'EOF'
+Flask
+SQLAlchemy
+oracledb
+pytest
+EOF
+
+echo "Créé : requirements.txt"
+
+echo "✅ Projet généré avec succès."
+echo "Prochaines étapes :"
+echo "  1) Crée/active un venv"
+echo "  2) pip install -r requirements.txt"
+echo "  3) Exporte les variables d'env du fichier conf/.env (ou utilise ton script de start)"
+echo "  4) Lance : python -m api.app"
+echo "  5) Va sur : http://localhost:5000/api/health"
