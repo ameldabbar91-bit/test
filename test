@@ -1,441 +1,85 @@
-
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Racine du projet (dossier courant)
-PROJECT_ROOT="$(pwd)"
-
-echo "Création du projet Flask + SQLAlchemy + Oracle (thin mode) dans : $PROJECT_ROOT"
-
-########################################
-# Dossiers
-########################################
-
-mkdir -p "$PROJECT_ROOT/conf"
-mkdir -p "$PROJECT_ROOT/api/models"
-mkdir -p "$PROJECT_ROOT/api/routes"
-mkdir -p "$PROJECT_ROOT/tests/unit"
-mkdir -p "$PROJECT_ROOT/tests/integration"
-
-########################################
-# Fichier conf/.env
-########################################
-
-cat > "$PROJECT_ROOT/conf/.env" << 'EOF'
-# Variables Oracle (à adapter à ton environnement)
-ORACLE_USER=system
-ORACLE_PASSWORD=oraclepwd
-ORACLE_HOST=192.168.1.20
-ORACLE_PORT=1521
-ORACLE_SERVICE=ORCLPDB1
-
-# Log applicatif (optionnel)
-LOG_LEVEL=INFO
-EOF
-
-echo "Créé : conf/.env"
-
-########################################
-# Fichier api/__init__.py
-########################################
-
-cat > "$PROJECT_ROOT/api/__init__.py" << 'EOF'
-# Rend le dossier api importable comme un package Python.
-# Exemple d'utilisation :
-#   from api.app import create_app
-EOF
-
-echo "Créé : api/__init__.py"
-
-########################################
-# Fichier api/extensions.py
-########################################
-
-cat > "$PROJECT_ROOT/api/extensions.py" << 'EOF'
 import os
+import oracledb
 import logging
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import create_engine, text
+from flask import current_app
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, scoped_session, declarative_base
+# Initialisation du journal
+logger = logging.getLogger(__name__)
 
-# Base ORM partagée pour tous les modèles
-Base = declarative_base()
+# Initialisation de SQLAlchemy
+db = SQLAlchemy()
 
-_engine = None
-SessionLocal = None
-
-
-def _build_oracle_url() -> str:
-    """
-    Construit l'URL de connexion SQLAlchemy pour Oracle (driver oracledb, mode thin).
-    Format : oracle+oracledb://user:pwd@host:port/?service_name=SERVICE
-    """
+def init_sqlalchemy(app=None):
+    if app is None:
+        app = current_app
+    
+    # --- Initialiser le client Oracle ---
+    # IMPORTANT: Supprime ou commente cette ligne si tu n'as pas les libs Oracle client
+    # oracledb.init_oracle_client()
+    
+    # --- Construction de l'URL SQLAlchemy ---
+    # Lire les variables d'environnement
     user = os.getenv("ORACLE_USER")
     password = os.getenv("ORACLE_PASSWORD")
-    host = os.getenv("ORACLE_HOST", "localhost")
-    port = os.getenv("ORACLE_PORT", "1521")
-    service = os.getenv("ORACLE_SERVICE")
-
-    if not all([user, password, host, port, service]):
+    host = os.getenv("ORACLE_HOST")
+    port = os.getenv("ORACLE_PORT")
+    service_name = os.getenv("ORACLE_SERVICE")
+    
+    # Vérification des informations de connexion
+    if not user or not password or not service_name or not host or not port:
         raise RuntimeError(
-            "Variables d'environnement Oracle manquantes : "
-            "ORACLE_USER, ORACLE_PASSWORD, ORACLE_HOST, ORACLE_PORT, ORACLE_SERVICE"
+            f"Configuration DB manquante: "
+            f"HOST: {host}, PORT: {port}, "
+            f"SERVICE_NAME: {service_name}, USER: {user}"
         )
-
-    return f"oracle+oracledb://{user}:{password}@{host}:{port}/?service_name={service}"
-
-
-def init_engine(app=None):
-    """
-    Initialise l'engine SQLAlchemy global + la Session ORM (SessionLocal).
-
-    À appeler une seule fois, typiquement dans create_app().
-    """
-    global _engine, SessionLocal
-
-    if _engine is not None:
-        # Déjà initialisé
-        return _engine
-
-    database_url = _build_oracle_url()
-
-    # Niveau de log (optionnel)
-    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
-    log_level = getattr(logging, log_level_str, logging.INFO)
-
-    _engine = create_engine(
-        database_url,
-        echo=False,          # True pour debug SQL, False en prod
-        pool_pre_ping=True,  # Vérifie la connexion avant usage
-        # Exemple de paramètres de pool si besoin :
-        # pool_size=5,
-        # max_overflow=10,
-        # pool_timeout=30,
-    )
-
-    SessionLocal = scoped_session(
-        sessionmaker(
-            bind=_engine,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-        )
-    )
-
-    # Log SQLAlchemy (optionnel)
-    logging.getLogger("sqlalchemy.engine").setLevel(log_level)
-
-    # Enregistrement du teardown Flask si app fournie
-    if app is not None:
-        register_db_handlers(app)
-
-    return _engine
-
-
-def register_db_handlers(app):
-    """
-    Enregistre les handlers Flask pour fermer la session à la fin de chaque requête.
-    À appeler depuis create_app une fois l'engine initialisé.
-    """
-
-    @app.teardown_appcontext
-    def remove_session(exception=None):
-        if SessionLocal is not None:
-            SessionLocal.remove()
-
-
-def get_db():
-    """
-    Dépendance type "context manager" :
-
-        from api.extensions import get_db
-
-        with next(get_db()) as db:
-            ...
-    """
-    if SessionLocal is None:
-        init_engine()
-    db = SessionLocal()
+    
+    # **CORRECTION ICI** - Format correct du DSN Oracle
+    # Option 1: Avec Easy Connect (plus simple)
+    dsn = f"{host}:{port}/{service_name}"
+    
+    # Option 2: Avec DSN complet (si besoin)
+    # dsn = f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SERVICE_NAME={service_name})))"
+    
+    # URL SQLAlchemy - **UTILISE 'oracledb' PAS 'oracle'**
+    db_url = f"oracledb://{user}:{password}@{dsn}"
+    
+    logger.info(f"Connexion à Oracle: {host}:{port}/{service_name}")
+    
+    # --- Pool de connexions SQLAlchemy ---
+    pool_size = int(os.getenv("DB_POOL_SIZE", "5"))
+    max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    
+    engine_options = {
+        "pool_pre_ping": True,  # Vérifie la connexion avant utilisation
+        "pool_size": pool_size,
+        "max_overflow": max_overflow,
+        "pool_timeout": pool_timeout,
+        "pool_recycle": pool_recycle,
+        # Options spécifiques Oracle
+        "connect_args": {
+            "encoding": "UTF-8",
+            "nencoding": "UTF-8"
+        }
+    }
+    
+    # --- Configuration de Flask / SQLAlchemy ---
+    app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options
+    
+    # Initialisation de SQLAlchemy avec l'application Flask
+    db.init_app(app)
+    
+    # Test de connexion
     try:
-        yield db
-    finally:
-        db.close()
-
-
-def get_engine():
-    """
-    Récupérer l'engine brut si besoin (pour des requêtes SQL directes).
-    """
-    if _engine is None:
-        init_engine()
-    return _engine
-EOF
-
-echo "Créé : api/extensions.py"
-
-########################################
-# Fichiers models
-########################################
-
-cat > "$PROJECT_ROOT/api/models/__init__.py" << 'EOF'
-from api.extensions import Base  # Base déclarative partagée
-
-# Import des modèles pour qu'ils soient enregistrés sur Base.metadata
-from .user import User  # noqa: F401
-EOF
-
-echo "Créé : api/models/__init__.py"
-
-cat > "$PROJECT_ROOT/api/models/user.py" << 'EOF'
-from datetime import datetime
-
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
-
-from api.extensions import Base
-
-
-class User(Base):
-    __tablename__ = "USERS"  # Attention à la casse si la table est créée en majuscules
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    email = Column(String(255), nullable=False, unique=True)
-    first_name = Column(String(100), nullable=True)
-    last_name = Column(String(100), nullable=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<User id={self.id} email={self.email!r}>"
-EOF
-
-echo "Créé : api/models/user.py"
-
-########################################
-# Fichiers routes
-########################################
-
-cat > "$PROJECT_ROOT/api/routes/__init__.py" << 'EOF'
-# Ce fichier peut rester vide ou servir à regrouper tes blueprints.
-EOF
-
-echo "Créé : api/routes/__init__.py"
-
-cat > "$PROJECT_ROOT/api/routes/health.py" << 'EOF'
-from flask import Blueprint, jsonify
-
-from api.extensions import get_engine, SessionLocal
-from api.models import User
-
-health_bp = Blueprint("health", __name__)
-
-
-@health_bp.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
-
-
-@health_bp.route("/health/db", methods=["GET"])
-def health_db():
-    # Test connexion brute
-    engine = get_engine()
-    try:
-        with engine.connect() as conn:
-            conn.execute("SELECT 1 FROM dual")
+        with app.app_context():
+            with db.engine.connect() as connection:
+                result = connection.execute(text("SELECT 1 FROM DUAL"))
+                logger.info("✅ Connexion Oracle réussie")
     except Exception as e:
-        return jsonify({"status": "error", "details": str(e)}), 500
-
-    # Test ORM : lire un utilisateur
-    db = SessionLocal()
-    try:
-        user = db.query(User).first()
-        if user:
-            return jsonify(
-                {
-                    "status": "ok",
-                    "sample_user_email": user.email,
-                    "sample_user_id": user.id,
-                }
-            )
-        else:
-            return jsonify(
-                {
-                    "status": "ok",
-                    "sample_user_email": None,
-                    "sample_user_id": None,
-                }
-            )
-    finally:
-        db.close()
-EOF
-
-echo "Créé : api/routes/health.py"
-
-########################################
-# Fichier api/app.py
-########################################
-
-cat > "$PROJECT_ROOT/api/app.py" << 'EOF'
-from flask import Flask
-
-from api.extensions import init_engine, register_db_handlers, get_engine
-from api.models import Base
-from api.routes.health import health_bp
-
-
-def create_app():
-    app = Flask(__name__)
-
-    # 1. Init engine + session
-    init_engine(app)
-    register_db_handlers(app)
-
-    # 2. (Optionnel) Création des tables en DEV uniquement
-    #    À ne pas faire en prod, préférer des migrations (Alembic).
-    with app.app_context():
-        engine = get_engine()
-        Base.metadata.create_all(bind=engine)
-
-    # 3. Enregistrer les blueprints
-    app.register_blueprint(health_bp, url_prefix="/api")
-
-    return app
-
-
-# Pour lancer avec : python -m api.app
-if __name__ == "__main__":
-    app = create_app()
-    app.run(debug=True)
-EOF
-
-echo "Créé : api/app.py"
-
-########################################
-# Pytest config
-########################################
-
-cat > "$PROJECT_ROOT/pytest.ini" << 'EOF'
-[pytest]
-testpaths = tests
-python_files = test_*.py
-
-markers =
-    integration: tests qui nécessitent une vraie connexion DB Oracle
-EOF
-
-echo "Créé : pytest.ini"
-
-########################################
-# Tests unitaires
-########################################
-
-cat > "$PROJECT_ROOT/tests/unit/test_user_model.py" << 'EOF'
-from api.models.user import User
-
-
-def test_user_model_basic_fields():
-    user = User(
-        email="test@example.com",
-        first_name="John",
-        last_name="Doe",
-        is_active=True,
-    )
-
-    assert user.email == "test@example.com"
-    assert user.first_name == "John"
-    assert user.last_name == "Doe"
-    assert user.is_active is True
-
-
-def test_user_repr_contains_email():
-    user = User(email="test@example.com")
-    assert "test@example.com" in repr(user)
-EOF
-
-echo "Créé : tests/unit/test_user_model.py"
-
-########################################
-# Tests d'intégration
-########################################
-
-cat > "$PROJECT_ROOT/tests/integration/test_db_connection.py" << 'EOF'
-import pytest
-
-from api.extensions import init_engine, get_engine, SessionLocal
-from api.models import User, Base
-
-
-@pytest.mark.integration
-def test_db_connect_and_select_dual():
-    """
-    Test d'intégration simple : vérifie qu'on peut se connecter à Oracle
-    et exécuter un SELECT 1 FROM dual.
-    """
-    init_engine()
-    engine = get_engine()
-
-    with engine.connect() as conn:
-        result = conn.execute("SELECT 1 FROM dual")
-        row = result.fetchone()
-
-    assert row is not None
-    # Suivant les drivers, row[0] peut être 1 ou '1'
-    assert str(row[0]) == "1"
-
-
-@pytest.mark.integration
-def test_db_can_insert_user():
-    """
-    Test d'intégration ORM :
-    - crée les tables (si pas déjà créé)
-    - insère un User
-    - le relit
-    """
-    init_engine()
-    engine = get_engine()
-
-    # Création des tables pour le test (en général, on le fait dans un setup dédié)
-    Base.metadata.create_all(bind=engine)
-
-    db = SessionLocal()
-    try:
-        user = User(
-            email="integration@test.com",
-            first_name="Int",
-            last_name="Test",
-            is_active=True,
-        )
-        db.add(user)
-        db.commit()
-
-        # Recharge l'utilisateur
-        u = db.query(User).filter_by(email="integration@test.com").first()
-        assert u is not None
-        assert u.email == "integration@test.com"
-        assert u.is_active is True
-    finally:
-        db.rollback()
-        db.close()
-EOF
-
-echo "Créé : tests/integration/test_db_connection.py"
-
-########################################
-# requirements.txt (pratique)
-########################################
-
-cat > "$PROJECT_ROOT/requirements.txt" << 'EOF'
-Flask
-SQLAlchemy
-oracledb
-pytest
-EOF
-
-echo "Créé : requirements.txt"
-
-echo "✅ Projet généré avec succès."
-echo "Prochaines étapes :"
-echo "  1) Crée/active un venv"
-echo "  2) pip install -r requirements.txt"
-echo "  3) Exporte les variables d'env du fichier conf/.env (ou utilise ton script de start)"
-echo "  4) Lance : python -m api.app"
-echo "  5) Va sur : http://localhost:5000/api/health"
+        logger.error(f"❌ Erreur de connexion Oracle: {str(e)}")
+        raise
