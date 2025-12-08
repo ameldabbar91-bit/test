@@ -1,93 +1,28 @@
-import os
 import logging
-from flask_sqlalchemy import SQLAlchemy
+from logging.handlers import RotatingFileHandler
 
-# Initialisation du journal
-logger = logging.getLogger(__name__)
+# ...
 
-# Initialisation de SQLAlchemy - GLOBALE
-db = SQLAlchemy()
+# Initialize Logger ####
+logname = os.path.basename(app.config["LOG_FILENAME"])
+logpath = os.path.join(app.config["LOG_DIRECTORY"], logname)
 
-def init_sqlalchemy(app=None):
-    """Initialise SQLAlchemy avec l'application Flask"""
-    
-    if app is None:
-        from flask import current_app
-        app = current_app
-    
-    logger.info("Initialisation de SQLAlchemy...")
-    
-    # --- Récupération des variables d'environnement ---
-    user = os.getenv("ORACLE_USER")
-    password = os.getenv("ORACLE_PASSWORD")
-    host = os.getenv("ORACLE_HOST", "localhost")
-    port = os.getenv("ORACLE_PORT", "1521")
-    service_name = os.getenv("ORACLE_SERVICE")
-    
-    # Log (sans afficher le mot de passe)
-    logger.info(f"Connexion à Oracle: {user}@{host}:{port}/{service_name}")
-    
-    # Validation des paramètres requis
-    if not all([user, password, service_name]):
-        missing = []
-        if not user: missing.append("ORACLE_USER")
-        if not password: missing.append("ORACLE_PASSWORD")
-        if not service_name: missing.append("ORACLE_SERVICE")
-        raise ValueError(f"Variables d'environnement manquantes: {', '.join(missing)}")
-    
-    # --- Construction de l'URL de connexion ---
-    # FORMAT 1: Simple (recommendé d'abord)
-    # dsn = f"{host}:{port}/{service_name}"
-    # db_url = f"oracle+oracledb://{user}:{password}@{dsn}"
-    
-    # FORMAT 2: Avec lib_mode=thick si besoin
-    # db_url = f"oracle+oracledb://{user}:{password}@{host}:{port}/?service_name={service_name}"
-    
-    # FORMAT 3: Pour tests - essaie différents formats
-    formats_to_try = [
-        # Format Easy Connect
-        f"oracle+oracledb://{user}:{password}@{host}:{port}/{service_name}",
-        # Format avec paramètre service_name
-        f"oracle+oracledb://{user}:{password}@{host}:{port}/?service_name={service_name}",
-        # Avec lib_mode thin (par défaut)
-        f"oracle+oracledb://{user}:{password}@{host}:{port}/{service_name}?lib_mode=thin",
-        # Ancien format cx_Oracle (compatibilité)
-        f"oracle+cx_oracle://{user}:{password}@{host}:{port}/?service_name={service_name}",
-    ]
-    
-    # Essaie chaque format jusqu'à ce qu'un fonctionne
-    successful_url = None
-    for db_url in formats_to_try:
-        try:
-            app.config["SQLALCHEMY_DATABASE_URI"] = db_url
-            app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-            
-            # Configuration du pool de connexions
-            app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-                "pool_pre_ping": True,
-                "pool_size": int(os.getenv("DB_POOL_SIZE", "5")),
-                "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "10")),
-                "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
-                "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "1800")),
-            }
-            
-            # Initialisation
-            db.init_app(app)
-            
-            # Test de connexion
-            with app.app_context():
-                conn = db.engine.connect()
-                result = conn.execute("SELECT 1 FROM DUAL")
-                conn.close()
-                logger.info(f"✅ Connexion réussie avec: {db_url}")
-                successful_url = db_url
-                break
-                
-        except Exception as e:
-            logger.warning(f"❌ Format échoué {db_url}: {str(e)[:100]}...")
-            continue
-    
-    if not successful_url:
-        raise ConnectionError("Aucun format de connexion n'a fonctionné. Vérifiez les paramètres Oracle.")
-    
-    return db
+handler = RotatingFileHandler(
+    logpath,
+    maxBytes=app.config["LOG_MAX_SIZE"],
+    backupCount=app.config["LOG_NB_BACKUP"],
+)
+
+formatter = logging.Formatter(
+    "%(asctime)s [%(process)d] [%(levelname)s] %(name)s - %(message)s"
+)
+handler.setFormatter(formatter)
+
+# On nettoie d’abord les handlers existants pour éviter les doublons
+app.logger.handlers.clear()
+app.logger.addHandler(handler)
+app.logger.setLevel(app.config["LOG_LEVEL"])
+app.logger.propagate = False  # pour ne pas remonter au root et doubler les logs
+
+app.logger.info("=== Application démarrée ===")
+app.logger.info(f"{app.application_name} {app.application_version}")
